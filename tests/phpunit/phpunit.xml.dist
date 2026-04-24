@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit
+  bootstrap="bootstrap.php"
+  colors="true"
+  verbose="true"
+  backupGlobals="false"
+  backupStaticAttributes="false"
+  convertWarningsToExceptions="true"
+  convertErrorsToExceptions="true"
+  convertNoticesToExceptions="false"
+>
+
+  <testsuites>
+    <testsuite name="Square Extension Tests">
+      <directory>./CRM</directory>
+    </testsuite>
+  </testsuites>
+
+  <php>
+    <ini name="error_reporting" value="-1" />
+    <ini name="display_errors" value="1" />
+  </php>
+</phpunit>

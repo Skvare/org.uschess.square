@@ -1,0 +1,30 @@
+{
+  "name": "uschess/org.uschess.square",
+  "description": "Square payment processor integration for US Chess",
+  "type": "civicrm-extension",
+  "extra": {
+    "civicrm": {
+      "type": "payment"
+    }
+  },
+  "autoload": {
+    "psr-4": {
+      "CRM\\": "CRM/"
+    }
+  },
+  "license": "AGPL-3.0",
+  "authors": [
+    {
+      "name": "US Chess Federation",
+      "email": "emanuel.london@uschess.org"
+    }
+  ],
+  "autoload-dev": {
+    "psr-4": {
+      "CRM\\Tests\\": "tests/"
+    }
+  },
+  "require": {
+    "square/square": "^43.2"
+  }
+}

@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<extension key="org.uschess.square" type="module">
+  <file>square</file>
+  <name>Square Payment Processor</name>
+  <description>Integration with Square for payment processing</description>
+  <license>AGPL-3.0</license>
+  <maintainer>
+    <author>
+      <name>US Chess Federation </name>
+      <email>emanuel.london@uschess.org</email>
+      <role>Maintainer</role>
+    </author>
+  </maintainer>
+  <urls>
+    <url desc="Main Extension Page">https://FIXME</url>
+    <url desc="Documentation">https://FIXME</url>
+    <url desc="Support">https://FIXME</url>
+    <url desc="Licensing">https://www.gnu.org/licenses/agpl-3.0.html</url>
+  </urls>
+  <releaseDate>2025-11-24</releaseDate>
+  <version>6.8.0</version>
+  <develStage>alpha</develStage>
+  <compatibility mode="semver">
+    <comments>Semantic versioning. For example, compatibility with "6.1" implies compatibility with "6.2".</comments>
+    <ver>6.8</ver>
+  </compatibility>
+  <comments>This is a new, undeveloped module</comments>
+  <civix>
+    <namespace>CRM/Square</namespace>
+    <format>25.10.2</format>
+    <angularModule>crmSquare</angularModule>
+  </civix>
+  <mixins>
+    <mixin>menu-xml@1.0.0</mixin>
+    <mixin>mgd-php@1.0.0</mixin>
+    <mixin>scan-classes@1.0.0</mixin>
+    <mixin>setting-php@1.0.0</mixin>
+    <mixin>smarty-v2@1.0.1</mixin>
+  </mixins>
+  <classloader>
+    <psr0 prefix="CRM_" path="."/>
+    <psr4 prefix="Civi\" path="Civi"/>
+  </classloader>
+</extension>
