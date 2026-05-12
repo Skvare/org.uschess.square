@@ -1,52 +1,5 @@
 <?php
 
-use CRM_Core_Form;
-use CRM_Utils_System;
-use CRM_Core_Error;
-use CRM_UschessSquare_Webhook;
-use CRM_Core_Payment_Square;
-use Exception;
-
-/**
- * Implementation of hook_civicrm_pageRun().
- *
- * This creates a public-facing URL:
- *   /civicrm/square/webhook
- *
- * Square will POST webhook events to that URL.
- */
-function org_uschess_square_civicrm_pageRun(&$page) {
-  $path = trim(CRM_Utils_System::currentPath(), '/');
-
-  if ($path === 'civicrm/square/webhook') {
-
-    // Load the Square payment processor instance.
-    try {
-      $pp = civicrm_api3('PaymentProcessor', 'getsingle', [
-        'payment_processor_type_id:name' => 'Square',
-      ]);
-    }
-    catch (Exception $e) {
-      CRM_Core_Error::debug_log_message("Square Webhook: cannot load payment processor: " . $e->getMessage());
-      CRM_Utils_System::civiExit();
-    }
-
-    // Determine mode from processor config
-    $mode = !empty($pp['is_test']) ? 'test' : 'live';
-
-    // Instantiate processor class with correct mode
-    $processor = new CRM_Core_Payment_Square($mode, $pp);
-
-    // Create webhook handler
-    $handler = new CRM_UschessSquare_Webhook($processor);
-
-    // Process webhook
-    $handler->handle();
-
-    CRM_Utils_System::civiExit();
-  }
-}
-
 /**
  * Implementation of hook_civicrm_config().
  * Required to autoload CRM/UschessSquare classes.
@@ -250,16 +203,18 @@ function org_uschess_square_civicrm_managed(&$entities) {
 }
 
 /**
- * Inject Square Web Payments SDK + JS + card container into contribution forms.
+ * Add hidden square_payment_token field to native CiviCRM contribution/event forms.
+ *
+ * Markup, JS, and settings injection is now handled by
+ * CRM_Core_Payment_Square::buildForm() which fires for ALL contexts including
+ * Drupal Webform AJAX billing block requests. This hook only adds the hidden
+ * field that carries the Square nonce back to the server on native forms.
  *
  * @param string $formName
  * @param CRM_Core_Form $form
  */
 function org_uschess_square_civicrm_buildForm($formName, &$form) {
-  // Debug: Log all forms to see what's being called
-  CRM_Core_Error::debug_log_message('Square buildForm: Form name = ' . $formName);
-  
-  // Only act on contribution and event registration forms.
+  // Only act on native contribution and event registration forms.
   if (!in_array($formName, ['CRM_Contribute_Form_Contribution', 'CRM_Event_Form_Registration'], TRUE)) {
     return;
   }
@@ -276,64 +231,10 @@ function org_uschess_square_civicrm_buildForm($formName, &$form) {
     return;
   }
 
-  // Hidden field where the JS will store the card token.
+  // Hidden field where the JS will store the Square card nonce before submit.
   if (!$form->elementExists('square_payment_token')) {
     $form->add('hidden', 'square_payment_token', '', ['id' => 'square_payment_token']);
   }
-
-  // Inject the container where Square will mount the card fields + error box.
-  $markup = '
-    <div id="square-card-container"></div>
-    <div id="square-card-errors" class="messages error" style="display:none"></div>
-  ';
-
-  // Attach this to the billing block region so it appears in the right place.
-  CRM_Core_Region::instance('billing-block')->add([
-    'markup' => $markup,
-  ]);
-
-  // Decide sandbox vs live SDK URL.
-  $isSandbox = !empty($processor['is_test']);
-  $sdkUrl = $isSandbox
-    ? 'https://sandbox.web.squarecdn.com/v1/square.js'
-    : 'https://web.squarecdn.com/v1/square.js';
-
-  $resources = CRM_Core_Resources::singleton();
-
-  // Load Square's JS SDK.
-  $resources->addScriptUrl($sdkUrl, 0, 'html-header');
-
-  // Load our own integration JS from the extension.
-  $resources->addScriptFile('org.uschess.square', 'js/square.js', 10, 'html-header');
-
-  // Pass settings to JS via window variables (more reliable than CRM.vars)
-  $inlineScript = "
-    window.squareApplicationId = '" . addslashes($processor['user_name'] ?? '') . "';
-    window.squareLocationId = '" . addslashes($processor['signature'] ?? ($processor['password'] ?? '')) . "';
-    window.squareIsSandbox = " . ($isSandbox ? 'true' : 'false') . ";
-  ";
-  $resources->addScript($inlineScript, 'html-header');
-
-  // Also pass settings to JS via CRM.vars for compatibility.
-  $settings = [
-    'applicationId' => $processor['user_name'] ?? '',
-    // Prefer signature as Location ID (per config labels), then password as fallback.
-    'locationId'    => $processor['signature'] ?? ($processor['password'] ?? ''),
-    'isSandbox'     => $isSandbox,
-    // Generic custom AJAX endpoint in Civi that will call our static handler.
-    'ajaxUrl'       => CRM_Utils_System::url(
-      'civicrm/ajax/custom',
-      NULL,
-      TRUE,  // absolute
-      NULL,
-      FALSE,
-      TRUE   // frontend
-    ),
-  ];
-
-  $resources->addSetting([
-    'orgUschessSquare' => $settings,
-  ]);
 }
 
 /**
@@ -399,7 +300,7 @@ function org_uschess_square_civicrm_post($op, $objectName, $objectId, &$objectRe
         try {
           $mode = !empty($processor['is_test']) ? 'test' : 'live';
           $squareProcessor = new CRM_Core_Payment_Square($mode, $processor);
-          $squareProcessor->cancelSubscription($recur['processor_id']);
+          $squareProcessor->cancelSquareSubscription($recur['processor_id']);
           CRM_Core_Error::debug_log_message(sprintf(
             'Square: Cancelled subscription %s for recurring contribution #%d',
             $recur['processor_id'],

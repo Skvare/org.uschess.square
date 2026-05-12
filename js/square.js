@@ -1,358 +1,726 @@
-(function ($, CRM) {
-  var SDK_PROMISE = null;
-  var INIT_RUNNING = false;
-  var CAPTURE_HANDLER_BOUND = false;
+/*jshint esversion: 8 */
+/**
+ * JS Integration between CiviCRM & Square Web Payments SDK.
+ *
+ * Supports:
+ *  - CiviCRM native contribution pages and event registration forms
+ *  - Drupal Webform (webform_civicrm module) billing blocks
+ *  - Backend contribution / event forms
+ *
+ * Architecture mirrors Stripe (civicrmStripe.js) and AuthNet (civicrmAuthNetAccept.js):
+ *  - CRM.squarePayment  — shared form-utility object (equivalent to CRM.payment in mjwshared)
+ *  - window.civicrmSquareHandleReload — reinitializes the card element when the
+ *    billing block is injected or replaced (including webform AJAX loads)
+ */
+(function ($, ts) {
 
-  // Initialize as soon as DOM is ready.
-  $(document).ready(function() {
-    initSquarePayments(document);
-  });
+  // ── Shared payment utilities ────────────────────────────────────────────────
+  // Equivalent to the CRM.payment object provided by the mjwshared extension in
+  // the Stripe/AuthNet ecosystem. We define it here so Square is self-contained.
 
-  // Webform CiviCRM injects the billing block via AJAX then triggers these.
-  // Re-init when fragments are inserted.
-  $(document).on('crmLoad.square crmFormLoad.square', function (e) {
-    initSquarePayments(e.target || document);
-  });
+  var payment = {
+    form: null,
+    submitButtons: null,
+    scripts: {},
 
-  function toNativePromise(maybeThenable) {
-    if (!maybeThenable) {
-      return Promise.resolve();
-    }
-    // Native Promise or thenable with .catch
-    if (typeof maybeThenable.then === 'function' && typeof maybeThenable.catch === 'function') {
-      return maybeThenable;
-    }
-    // jQuery Deferred / jqXHR (has .done/.fail) or older thenables
-    if (typeof maybeThenable.done === 'function' || typeof maybeThenable.fail === 'function') {
-      return new Promise(function (resolve, reject) {
-        if (typeof maybeThenable.done === 'function') {
-          maybeThenable.done(resolve);
+    /**
+     * Sum visible line items on a webform or fall back to CiviCRM native total.
+     */
+    getTotalAmount: function() {
+      var totalAmount = 0.0;
+      if (this.getIsDrupalWebform()) {
+        $('.line-item:visible', '#wf-crm-billing-items').each(function() {
+          totalAmount += parseFloat($(this).data('amount'));
+        });
+        return totalAmount;
+      }
+      if (typeof calculateTotalFee === 'function') {
+        return parseFloat(calculateTotalFee());
+      }
+      if (document.getElementById('totalTaxAmount') !== null) {
+        return this.calculateTaxAmount();
+      }
+      if ($('#priceset [price]').length > 0) {
+        $('#priceset [price]').each(function() {
+          totalAmount += $(this).data('line_raw_total');
+        });
+        return totalAmount;
+      }
+      if (document.getElementById('total_amount')) {
+        return parseFloat(document.getElementById('total_amount').value);
+      }
+      return totalAmount;
+    },
+
+    calculateTaxAmount: function() {
+      var el = document.getElementById('totalTaxAmount');
+      if (!el) return 0;
+      var totalTaxAmount;
+      if (el.textContent.length === 0) {
+        totalTaxAmount = document.getElementById('total_amount').value;
+      }
+      else {
+        var dPoint = (typeof separator !== 'undefined') ? separator : '.';
+        var matcher = new RegExp('\\d{1,3}(' + dPoint.replace(/\W/g, '\\$&') + '\\d{0,2})?', 'g');
+        totalTaxAmount = el.textContent.match(matcher).join('').replace(dPoint, '.');
+      }
+      totalTaxAmount = parseFloat(totalTaxAmount);
+      return isNaN(totalTaxAmount) ? 0.0 : totalTaxAmount;
+    },
+
+    getCurrency: function(defaultCurrency) {
+      if (this.form && this.form.querySelector('#currency')) {
+        return this.form.querySelector('#currency').value;
+      }
+      return defaultCurrency;
+    },
+
+    /**
+     * Are we on a Drupal webform?
+     * Webform 7: .webform-client-form  Webform 8/9/10: .webform-submission-form
+     */
+    getIsDrupalWebform: function() {
+      return this.form !== null && (
+        this.form.classList.contains('webform-client-form') ||
+        this.form.classList.contains('webform-submission-form')
+      );
+    },
+
+    /**
+     * Find the <form> element that contains the billing block.
+     * Searches for well-known CiviCRM billing-block markers.
+     */
+    getBillingForm: function() {
+      var billingFormID = $('div#crm-payment-js-billing-form-container').closest('form').attr('id');
+      if (typeof billingFormID === 'undefined' || !billingFormID.length) {
+        billingFormID = $('input[name=hidden_processor]').closest('form').prop('id');
+      }
+      if (typeof billingFormID === 'undefined' || !billingFormID.length) {
+        billingFormID = $('div#billing-payment-block').closest('form').prop('id');
+      }
+      if (typeof billingFormID === 'undefined' || !billingFormID.length) {
+        this.debugging('squarePayment', 'no billing form found');
+        this.form = null;
+        return null;
+      }
+      this.form = document.getElementById(billingFormID);
+      return this.form;
+    },
+
+    /**
+     * Return the submit buttons relevant to this billing form.
+     * Webforms use different button classes than CiviCRM native forms.
+     */
+    getBillingSubmit: function() {
+      if (this.getIsDrupalWebform()) {
+        this.submitButtons = this.form.querySelectorAll('[type="submit"].webform-submit');
+        if (this.submitButtons.length === 0) {
+          // Drupal 8/9/10 webform
+          this.submitButtons = this.form.querySelectorAll('[type="submit"].webform-button--submit');
         }
-        if (typeof maybeThenable.fail === 'function') {
-          maybeThenable.fail(reject);
+      }
+      else {
+        this.submitButtons = this.form.querySelectorAll('[type="submit"].validate');
+      }
+      return this.submitButtons;
+    },
+
+    getPaymentProcessorSelectorValue: function() {
+      var sel = this.form.querySelector('input[name="payment_processor_id"]:checked');
+      if (sel) return parseInt(sel.value);
+      sel = this.form.querySelector('select[name="payment_processor_id"]');
+      if (sel) return parseInt(sel.value);
+      return null;
+    },
+
+    /**
+     * Return true when an AJAX URL is a CiviCRM payment-form request.
+     * Used to detect when the webform billing block has been refreshed.
+     */
+    isAJAXPaymentForm: function(url) {
+      var patterns = [
+        '(\\/|%2F)payment(\\/|%2F)form',
+        '(\\/|%2F)contact(\\/|%2F)view(\\/|%2F)participant',
+        '(\\/|%2F)contact(\\/|%2F)view(\\/|%2F)membership',
+        '(\\/|%2F)contact(\\/|%2F)view(\\/|%2F)contribution',
+      ];
+      var basePage = (CRM.config && CRM.config.isFrontend && CRM.vars.payment && CRM.vars.payment.basePage)
+        ? CRM.vars.payment.basePage : null;
+      for (var i = 0; i < patterns.length; i++) {
+        if (basePage && url.match(basePage + patterns[i])) return true;
+        if (url.match('civicrm' + patterns[i])) return true;
+      }
+      return false;
+    },
+
+    resetBillingFieldsRequiredForJQueryValidate: function() {
+      $('div#priceset input[type="checkbox"], fieldset.crm-profile input[type="checkbox"], #on-behalf-block input[type="checkbox"]').each(function() {
+        if ($(this).attr('data-name') !== undefined) {
+          $(this).attr('name', $(this).attr('data-name'));
         }
-        // If it only has .then, try it too.
-        if (typeof maybeThenable.then === 'function') {
-          try {
-            maybeThenable.then(resolve, reject);
-          } catch (e) {
-            reject(e);
+      });
+    },
+
+    setBillingFieldsRequiredForJQueryValidate: function() {
+      $('div.label span.crm-marker').each(function() {
+        $(this).closest('div').next('div').find('input[type="checkbox"]').addClass('required');
+      });
+      $('div#priceset input[type="checkbox"], fieldset.crm-profile input[type="checkbox"], #on-behalf-block input[type="checkbox"]').each(function() {
+        var name = $(this).attr('name');
+        $(this).attr('data-name', name);
+        $(this).attr('name', name.replace('[' + name.split('[').pop(), ''));
+      });
+      if ($.validator && $.validator.methods) {
+        $.validator.methods.email = function(value, element) {
+          return this.optional(element) || /^[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(value);
+        };
+      }
+    },
+
+    /**
+     * Drupal webform needs an "op" hidden field to know which page action fired.
+     */
+    addDrupalWebformActionElement: function(submitAction) {
+      var hiddenInput = document.getElementById('action') || document.createElement('input');
+      hiddenInput.setAttribute('type', 'hidden');
+      hiddenInput.setAttribute('name', 'op');
+      hiddenInput.setAttribute('id', 'action');
+      hiddenInput.setAttribute('value', submitAction);
+      this.form.appendChild(hiddenInput);
+    },
+
+    doStandardFormSubmit: function() {
+      for (var i = 0; i < this.submitButtons.length; ++i) {
+        this.submitButtons[i].setAttribute('disabled', true);
+      }
+      this.resetBillingFieldsRequiredForJQueryValidate();
+      this.form.submit();
+    },
+
+    validateReCaptcha: function() {
+      if (typeof grecaptcha === 'undefined') return true;
+      if ($(this.form).find('[name=g-recaptcha-response]').length === 0) return true;
+      if ($(this.form).find('[name=g-recaptcha-response]').val().length > 0) return true;
+      this.swalFire({ icon: 'warning', text: '', title: ts('Please complete the reCaptcha') }, '.recaptcha-section', true);
+      this.triggerEvent('crmBillingFormNotValid');
+      this.form.dataset.submitted = 'false';
+      return false;
+    },
+
+    validateCiviDiscount: function() {
+      if ($('input#discountcode').length &&
+          $('input#discountcode').val().length > 0 &&
+          $('input#discountcode').attr('discount-applied') != 1) {
+        this.swalFire({ icon: 'error', text: ts('Please apply the Discount Code or clear the Discount Code text-field'), title: '' }, '#crm-container', true);
+        this.triggerEvent('crmBillingFormNotValid');
+        this.form.dataset.submitted = 'false';
+        return false;
+      }
+      return true;
+    },
+
+    validateForm: function() {
+      if (($(this.form).valid() === false) || $(this.form).data('crmBillingFormValid') === false) {
+        this.debugging('squarePayment', 'form not valid');
+        this.swalFire({ icon: 'error', text: ts('Please check and fill in all required fields!'), title: '' }, '#crm-container', true);
+        this.triggerEvent('crmBillingFormNotValid');
+        this.form.dataset.submitted = 'false';
+        return false;
+      }
+      return true;
+    },
+
+    addHandlerNonPaymentSubmitButtons: function() {
+      var self = this;
+      var nonPaymentSubmitButtons = this.form.querySelectorAll(
+        '[type="submit"][formnovalidate="1"], ' +
+        '[type="submit"][formnovalidate="formnovalidate"], ' +
+        '[type="submit"].cancel, ' +
+        '[type="submit"].webform-previous'
+      );
+      for (var i = 0; i < nonPaymentSubmitButtons.length; ++i) {
+        nonPaymentSubmitButtons[i].addEventListener('click', function() {
+          self.form.dataset.submitdontprocess = 'true';
+        });
+      }
+    },
+
+    addSupportForCiviDiscount: function() {
+      var self = this;
+      var els = this.form.querySelectorAll('input#discountcode');
+      for (var i = 0; i < els.length; ++i) {
+        els[i].addEventListener('keydown', function(event) {
+          if (event.code === 'Enter') {
+            event.preventDefault();
+            self.form.dataset.submitdontprocess = 'true';
+          }
+        });
+      }
+    },
+
+    displayError: function(errorMessage, notify) {
+      this.debugging('squarePayment', 'error: ' + errorMessage);
+      var errorElement = document.getElementById('square-card-errors');
+      if (errorElement) {
+        errorElement.style.display = 'block';
+        errorElement.textContent = errorMessage;
+      }
+      if (this.form) {
+        this.form.dataset.submitted = 'false';
+      }
+      if (this.submitButtons) {
+        for (var i = 0; i < this.submitButtons.length; ++i) {
+          this.submitButtons[i].removeAttribute('disabled');
+        }
+      }
+      this.triggerEvent('crmBillingFormNotValid');
+      if (notify) {
+        this.swalFire({ icon: 'error', text: errorMessage, title: '' }, '#crm-container', true);
+      }
+    },
+
+    swalFire: function(parameters, scrollToElement, fallBackToAlert) {
+      if (typeof Swal === 'function') {
+        if (scrollToElement && scrollToElement.length > 0) {
+          var $el = $(scrollToElement);
+          if ($el.length) {
+            parameters.didClose = function() { window.scrollTo($el.position()); };
           }
         }
-      });
-    }
-    if (typeof maybeThenable.then === 'function') {
-      return new Promise(function (resolve, reject) {
-        try {
-          maybeThenable.then(resolve, reject);
-        } catch (e) {
-          reject(e);
-        }
-      });
-    }
-    return Promise.resolve(maybeThenable);
-  }
-
-  function ensureSquareSdkLoaded(isSandbox) {
-    // Square global is provided by the SDK.
-    if (window.Square && window.Square.payments) {
-      return Promise.resolve();
-    }
-
-    if (SDK_PROMISE) {
-      return SDK_PROMISE;
-    }
-
-    var sdkUrl = isSandbox
-      ? 'https://sandbox.web.squarecdn.com/v1/square.js'
-      : 'https://web.squarecdn.com/v1/square.js';
-
-    // Prefer CiviCRM loader if present.
-    if (CRM && typeof CRM.loadScript === 'function') {
-      SDK_PROMISE = toNativePromise(CRM.loadScript(sdkUrl));
-      return SDK_PROMISE;
-    }
-
-    SDK_PROMISE = new Promise(function (resolve, reject) {
-      // Avoid duplicate insertion if another script added it already.
-      var existing = document.querySelector('script[src="' + sdkUrl + '"]');
-      if (existing) {
-        existing.addEventListener('load', function () { resolve(); });
-        existing.addEventListener('error', function () { reject(new Error('Failed to load Square SDK')); });
-        // If it already loaded, resolve immediately.
-        if ((window.Square && window.Square.payments)) {
-          resolve();
-        }
-        return;
+        Swal.fire(parameters);
       }
-
-      var s = document.createElement('script');
-      s.src = sdkUrl;
-      s.async = true;
-      s.onload = function () { resolve(); };
-      s.onerror = function () { reject(new Error('Failed to load Square SDK')); };
-      (document.head || document.documentElement).appendChild(s);
-    });
-
-    return SDK_PROMISE;
-  }
-
-  function initSquarePayments(root) {
-    // Prevent rapid double-inits when crmLoad + crmFormLoad both fire.
-    if (INIT_RUNNING) {
-      return;
-    }
-    INIT_RUNNING = true;
-
-    var $root = root ? $(root) : $(document);
-
-    // Try to get config from window variables first (more reliable)
-    var appId = window.squareApplicationId;
-    var locationId = window.squareLocationId;
-    var isSandbox = !!window.squareIsSandbox;
-    
-    // Fall back to CRM.vars if window variables not set
-    if (!appId || !locationId) {
-      if (!CRM || !CRM.vars || !CRM.vars.orgUschessSquare) {
-        console.warn('Square.js: CRM.vars.orgUschessSquare not found');
-        INIT_RUNNING = false;
-        return;
+      else if (fallBackToAlert) {
+        window.alert((parameters.title || '') + ' ' + (parameters.text || ''));
       }
-      var cfg = CRM.vars.orgUschessSquare;
-      appId = cfg.applicationId;
-      locationId = cfg.locationId;
-      isSandbox = !!cfg.isSandbox;
-    }
-    
-    if (!appId || !locationId) {
-      console.error('Square config missing applicationId or locationId');
-      INIT_RUNNING = false;
-      return;
-    }
+    },
 
-    // Check if card container exists (within root context if possible).
-    var $cardContainer = $root.find('#square-card-container');
-    if (!$cardContainer.length) {
-      $cardContainer = $('#square-card-container');
-    }
-    if (!$cardContainer.length) {
-      console.warn('Square.js: Card container not found');
-      INIT_RUNNING = false;
-      return;
-    }
+    swalClose: function() {
+      if (typeof Swal === 'function') Swal.close();
+    },
 
-    // Avoid re-binding if already initialized for this container.
-    if ($cardContainer.data('square-initialized')) {
-      INIT_RUNNING = false;
-      return;
-    }
-    
-    // Verify token field exists
-    var $tokenField = $root.find('#square_payment_token');
-    if (!$tokenField.length) {
-      $tokenField = $('#square_payment_token');
-    }
-    if (!$tokenField.length) {
-      // Webform fragments can omit the hidden input in some cases; create it inside the parent form.
-      console.warn('Square.js: Token field #square_payment_token not found; will create one.');
-    }
-
-    // Bind to the nearest form containing the Square UI.
-    var $form = $cardContainer.closest('form');
-    if (!$form.length) {
-      console.warn('Square.js: No parent form found; trying common selectors');
-      $form = $('form#Main').length ? $('form#Main') :
-        $('form.CRM_Contribute_Form_Contribution').length ? $('form.CRM_Contribute_Form_Contribution') :
-          $('form.CRM_Event_Form_Registration').length ? $('form.CRM_Event_Form_Registration') :
-            $('form').first();
-    }
-    if (!$form.length) {
-      console.error('Square.js: No form found at all');
-      INIT_RUNNING = false;
-      return;
-    }
-
-    // Ensure token field exists inside the form and has a name so it posts.
-    if (!$tokenField || !$tokenField.length || !$tokenField.closest('form').is($form)) {
-      $tokenField = $form.find('#square_payment_token');
-    }
-    if (!$tokenField.length) {
-      $tokenField = $('<input type="hidden" id="square_payment_token" name="square_payment_token" />');
-      $form.append($tokenField);
-    }
-
-    var payments = null;
-    var card = null;
-    var tokenized = false;
-
-    // Mark initialized now (prevents double-init); if SDK load fails we unmark.
-    $cardContainer.data('square-initialized', true);
-
-    function showInitError() {
-      var $error = $('#square-card-errors');
-      $error
-        .text('Unable to load secure card entry. Please try again later or contact support.')
-        .show();
-    }
-
-    function initSquare() {
-      return toNativePromise(ensureSquareSdkLoaded(isSandbox)).then(function () {
-        if (!window.Square || !window.Square.payments) {
-          throw new Error('Square.payments API not available after SDK load.');
+    triggerEvent: function(event, scriptName) {
+      var triggerNow = true;
+      if (typeof scriptName !== 'undefined' && event === 'crmBillingFormReloadComplete') {
+        if (this.scripts[scriptName]) {
+          this.scripts[scriptName].reloadComplete = true;
         }
-        payments = window.Square.payments(appId, locationId);
-        if (!payments) {
-          throw new Error('Failed to initialize Square payments.');
-        }
-        return payments.card().then(function (c) {
-          card = c;
-          return card.attach('#square-card-container');
+        $.each(this.scripts, function(name, obj) {
+          if (obj.reloadComplete !== true) {
+            triggerNow = false;
+            return false;
+          }
         });
-      }).catch(function () {
-        // Allow future retries if this was a transient failure.
-        $cardContainer.data('square-initialized', false);
-        showInitError();
-      }).then(function () {
-        INIT_RUNNING = false;
-      }, function () {
-        INIT_RUNNING = false;
-      });
+      }
+      if (triggerNow && this.form) {
+        $(this.form).trigger(event);
+      }
+    },
+
+    registerScript: function(scriptName) {
+      this.scripts[scriptName] = { reloadComplete: false };
+    },
+
+    debugging: function(scriptName, errorCode) {
+      if (typeof CRM.vars !== 'undefined' &&
+          typeof CRM.vars.payment !== 'undefined' &&
+          Boolean(CRM.vars.payment.jsDebug) === true) {
+        console.log(new Date().toISOString() + ' ' + scriptName + ': ' + errorCode);
+      }
     }
+  };
 
-    // Initialize card UI.
-    initSquare();
+  if (typeof CRM.squarePayment === 'undefined') {
+    CRM.squarePayment = payment;
+  }
+  else {
+    $.extend(CRM.squarePayment, payment);
+  }
 
-    async function tokenizeAndSubmit(event, submitterEl) {
-      
-      // If already tokenized, allow normal submission
-      if (tokenized) {
+  // ── Square processor script ─────────────────────────────────────────────────
+
+  var script = {
+    name: 'square',
+    card: null,
+    sdkPromise: null,
+    initializing: false,
+
+    debugging: function(msg) {
+      CRM.squarePayment.debugging(script.name, msg);
+    },
+
+    getConfig: function() {
+      var cfg = (typeof CRM.vars !== 'undefined' && CRM.vars.orgUschessSquare) || {};
+      return {
+        appId:       cfg.applicationId || window.squareApplicationId || '',
+        locationId:  cfg.locationId    || window.squareLocationId    || '',
+        isSandbox:   !!(cfg.isSandbox  || window.squareIsSandbox),
+        processorId: cfg.id ? parseInt(cfg.id) : null,
+      };
+    },
+
+    ensureSdkLoaded: function(isSandbox) {
+      if (window.Square && window.Square.payments) return Promise.resolve();
+      if (script.sdkPromise) return script.sdkPromise;
+
+      var sdkUrl = isSandbox
+        ? 'https://sandbox.web.squarecdn.com/v1/square.js'
+        : 'https://web.squarecdn.com/v1/square.js';
+
+      script.sdkPromise = new Promise(function(resolve, reject) {
+        var existing = document.querySelector('script[src="' + sdkUrl + '"]');
+        if (existing) {
+          if (window.Square && window.Square.payments) { resolve(); return; }
+          existing.addEventListener('load', resolve);
+          existing.addEventListener('error', function() { reject(new Error('Square SDK load failed')); });
+          return;
+        }
+        var s = document.createElement('script');
+        s.src = sdkUrl;
+        s.async = true;
+        s.onload = resolve;
+        s.onerror = function() { reject(new Error('Square SDK load failed')); };
+        (document.head || document.documentElement).appendChild(s);
+      });
+
+      return script.sdkPromise;
+    },
+
+    notScriptProcessor: function() {
+      script.debugging('payment processor is not Square, cleaning up');
+      script.initializing = false;
+      if (script.card) {
+        try { script.card.destroy(); } catch(e) {}
+        script.card = null;
+      }
+      var containerEl = document.getElementById('square-card-container');
+      if (containerEl) {
+        containerEl.innerHTML = '';
+      }
+      if (typeof CRM.vars !== 'undefined') {
+        delete CRM.vars.orgUschessSquare;
+      }
+      if (CRM.squarePayment.submitButtons) {
+        $(CRM.squarePayment.submitButtons).show();
+      }
+    },
+
+    checkAndLoad: function() {
+      if (script.initializing) {
+        script.debugging('init already in progress, skipping');
+        return;
+      }
+      if (typeof CRM.vars === 'undefined' || typeof CRM.vars.orgUschessSquare === 'undefined') {
+        script.debugging('CRM.vars.orgUschessSquare not defined');
+        return;
+      }
+      var cfg = script.getConfig();
+      if (!cfg.appId || !cfg.locationId) {
+        script.debugging('Square config missing applicationId or locationId');
+        return;
+      }
+
+      script.initializing = true;
+
+      // Destroy any previously mounted card instance before creating a new one.
+      if (script.card) {
+        try { script.card.destroy(); } catch(e) {}
+        script.card = null;
+      }
+
+      // Empty the container so Square always starts with a clean slate.
+      // This prevents the "card appears twice" issue when switching processors.
+      var containerEl = document.getElementById('square-card-container');
+      if (containerEl) {
+        containerEl.innerHTML = '';
+        containerEl.style.display = 'none';
+      }
+
+      script.ensureSdkLoaded(cfg.isSandbox)
+        .then(function() {
+          if (!window.Square || !window.Square.payments) {
+            throw new Error('Square.payments API not available after SDK load');
+          }
+          var payments = window.Square.payments(cfg.appId, cfg.locationId);
+          return payments.card().then(function(c) {
+            script.card = c;
+            return script.card.attach('#square-card-container');
+          });
+        })
+        .then(function() {
+          script.initializing = false;
+          var container = document.getElementById('square-card-container');
+          if (container) container.style.display = 'block';
+          script.doAfterElementsHaveLoaded();
+        })
+        .catch(function(err) {
+          script.initializing = false;
+          script.debugging('Square card init failed: ' + (err && err.message || err));
+          var errEl = document.getElementById('square-card-errors');
+          if (errEl) {
+            errEl.textContent = ts('Unable to load secure card entry. Please try again later or contact support.');
+            errEl.style.display = 'block';
+          }
+          script.triggerReloadFailed();
+        });
+    },
+
+    doAfterElementsHaveLoaded: function() {
+      CRM.squarePayment.setBillingFieldsRequiredForJQueryValidate();
+      CRM.squarePayment.form.dataset.submitdontprocess = 'false';
+      CRM.squarePayment.addHandlerNonPaymentSubmitButtons();
+
+      var submitButtons = CRM.squarePayment.getBillingSubmit();
+      for (var i = 0; i < submitButtons.length; ++i) {
+        submitButtons[i].addEventListener('click', submitButtonClick);
+        submitButtons[i].removeAttribute('onclick');
+      }
+
+      function submitButtonClick(clickEvent) {
+        if (typeof CRM.vars === 'undefined' || typeof CRM.vars.orgUschessSquare === 'undefined') {
+          return false;
+        }
+        CRM.squarePayment.form.dataset.submitdontprocess = 'false';
+        return script.submit(clickEvent);
+      }
+
+      CRM.squarePayment.addSupportForCiviDiscount();
+
+      // Webform-specific wiring
+      if (CRM.squarePayment.getIsDrupalWebform()) {
+        // Store which submit button was clicked so the op hidden field is set
+        $('[type=submit]').click(function() {
+          CRM.squarePayment.addDrupalWebformActionElement(this.value);
+        });
+        // Enter key on webform should also trigger our submit
+        CRM.squarePayment.form.addEventListener('keydown', function(keydownEvent) {
+          if (keydownEvent.code === 'Enter') {
+            CRM.squarePayment.addDrupalWebformActionElement(keydownEvent.target.value || '');
+            script.submit(keydownEvent);
+          }
+        });
+        $('#billingcheckbox:input').hide();
+        $('label[for="billingcheckbox"]').hide();
+      }
+
+      var cardContainer = document.getElementById('square-card-container');
+      if (cardContainer && cardContainer.children.length) {
+        CRM.squarePayment.triggerEvent('crmBillingFormReloadComplete', script.name);
+        CRM.squarePayment.triggerEvent('crmSquareBillingFormReloadComplete', script.name);
+      }
+      else {
+        script.triggerReloadFailed();
+      }
+    },
+
+    submit: async function(submitEvent) {
+      submitEvent.preventDefault();
+      script.debugging('submit handler');
+
+      if (CRM.squarePayment.form.dataset.submitted === 'true') {
+        return;
+      }
+      CRM.squarePayment.form.dataset.submitted = 'true';
+
+      if (!CRM.squarePayment.validateCiviDiscount()) return false;
+      if (!CRM.squarePayment.validateForm()) return false;
+      if (!CRM.squarePayment.validateReCaptcha()) return false;
+
+      if (typeof CRM.vars === 'undefined' || typeof CRM.vars.orgUschessSquare === 'undefined') {
+        script.debugging('not a Square processor, submitting normally');
         return true;
       }
 
-      // If card is not initialized, let normal submit happen for server-side validation
-      if (!card) {
+      var cfg = script.getConfig();
+      var chosenProcessorId = null;
+
+      // Determine which processor the user has selected (matters when multiple processors exist)
+      if (CRM.squarePayment.getIsDrupalWebform()) {
+        var $wfProc = $('input[name="submitted[civicrm_1_contribution_1_contribution_payment_processor_id]"]');
+        if (!$wfProc.length) {
+          // Single processor on form — treat it as ours
+          chosenProcessorId = cfg.processorId;
+        }
+        else {
+          var checkedWf = CRM.squarePayment.form.querySelector('input[name="submitted[civicrm_1_contribution_1_contribution_payment_processor_id]"]:checked');
+          chosenProcessorId = checkedWf ? parseInt(checkedWf.value) : null;
+        }
+      }
+      else {
+        if ((CRM.squarePayment.form.querySelector('.crm-section.payment_processor-section') !== null) ||
+            (CRM.squarePayment.form.querySelector('.crm-section.credit_card_info-section') !== null)) {
+          var checkedProc = CRM.squarePayment.form.querySelector('input[name="payment_processor_id"]:checked');
+          if (checkedProc) {
+            chosenProcessorId = parseInt(checkedProc.value);
+          }
+        }
+      }
+
+      // Pay-later or no processor selected → standard submit
+      if (chosenProcessorId === 0) {
+        script.debugging('pay-later selected');
+        return CRM.squarePayment.doStandardFormSubmit();
+      }
+
+      // Non-payment submit (e.g. discount "Apply" button) → skip tokenization
+      if (CRM.squarePayment.form.dataset.submitdontprocess === 'true') {
+        script.debugging('non-payment submit, skipping tokenization');
         return true;
       }
 
-      event.preventDefault();
-      event.stopImmediatePropagation();
+      if (CRM.squarePayment.getIsDrupalWebform()) {
+        // Billing block hidden → not a payment step
+        if ($('#billing-payment-block').is(':hidden')) {
+          script.debugging('billing block hidden on webform');
+          return true;
+        }
+        var $procFields = $('[name="submitted[civicrm_1_contribution_1_contribution_payment_processor_id]"]');
+        if ($procFields.length) {
+          var checkedVal = $procFields.filter(':checked').val();
+          if (checkedVal === '0' || parseInt(checkedVal) === 0) {
+            script.debugging('no payment processor selected on webform');
+            return true;
+          }
+        }
+      }
 
-      var $error = $('#square-card-errors');
-      $error.hide().text('');
+      var totalAmount = CRM.squarePayment.getTotalAmount();
+      if (totalAmount === 0.0) {
+        script.debugging('zero amount, standard submit');
+        return CRM.squarePayment.doStandardFormSubmit();
+      }
+
+      // Disable buttons to prevent double-clicks
+      var submitButtons = CRM.squarePayment.submitButtons;
+      for (var i = 0; i < submitButtons.length; ++i) {
+        submitButtons[i].setAttribute('disabled', true);
+      }
+
+      if (!script.card) {
+        script.debugging('card element not initialized');
+        CRM.squarePayment.form.dataset.submitted = 'false';
+        for (var j = 0; j < submitButtons.length; ++j) {
+          submitButtons[j].removeAttribute('disabled');
+        }
+        return true;
+      }
 
       try {
-        var result = await card.tokenize();
+        var result = await script.card.tokenize();
         if (!result || result.status !== 'OK') {
-          var message = 'Your card could not be processed. Please check your details.';
+          var message = ts('Your card could not be processed. Please check your details.');
           if (result && result.errors && result.errors.length) {
             message = result.errors[0].message || message;
           }
-          console.error('Square.js: Tokenization failed', message);
-          $error.text(message).show();
+          CRM.squarePayment.displayError(message, true);
           return false;
         }
 
-        var nonce = result.token;
-        if (!nonce) {
-          $error.text('Missing card token from Square. Please try again.').show();
-          return false;
+        // Write token into the hidden field that the PHP processor reads
+        var tokenField = CRM.squarePayment.form.querySelector('#square_payment_token') ||
+                         CRM.squarePayment.form.querySelector('[name="square_payment_token"]');
+        if (!tokenField) {
+          tokenField = document.createElement('input');
+          tokenField.setAttribute('type', 'hidden');
+          tokenField.setAttribute('name', 'square_payment_token');
+          tokenField.setAttribute('id', 'square_payment_token');
+          CRM.squarePayment.form.appendChild(tokenField);
         }
+        tokenField.value = result.token;
 
-        // Put token into hidden field for CiviCRM to pick up.
-        $tokenField.val(nonce);
-
-        // Mark as tokenized so next submit goes through
-        tokenized = true;
-
-        // Re-submit the form in a way that preserves the clicked button.
-        // Webform wizard relies on the submitter button name/value.
-        var formEl = $form.get(0);
-        if (formEl) {
-          // Prevent our own handler from re-running pointlessly.
-          $form.off('submit.square');
-
-          // Modern browsers: preserves submitter values.
-          if (typeof formEl.requestSubmit === 'function') {
-            try {
-              formEl.requestSubmit(submitterEl || undefined);
-              return true;
-            } catch (e) {
-              // Fall through to legacy methods.
-            }
-          }
-
-          // Legacy fallback: click the submitter if we have it.
-          if (submitterEl && typeof submitterEl.click === 'function') {
-            submitterEl.click();
-            return true;
-          }
-
-          // Last resort (may drop submitter values).
-          formEl.submit();
-        }
-
-      } catch (e) {
-        $error
-          .text('Unexpected error processing your card. Please try again.')
-          .show();
+        CRM.squarePayment.resetBillingFieldsRequiredForJQueryValidate();
+        CRM.squarePayment.form.submit();
+      }
+      catch(e) {
+        CRM.squarePayment.displayError(ts('Unexpected error processing your card. Please try again.'), true);
+        CRM.squarePayment.form.dataset.submitted = 'false';
         return false;
       }
+    },
+
+    triggerReloadFailed: function() {
+      CRM.squarePayment.triggerEvent('crmBillingFormReloadFailed');
+      var errEl = document.getElementById('square-card-errors');
+      if (errEl) {
+        errEl.textContent = ts('Could not load payment element. Is there a problem with your network connection?');
+        errEl.style.display = 'block';
+      }
     }
+  };
 
-    // Intercept submit in CAPTURE phase so we run before other handlers.
-    // This is important in Webform, where other submit handlers may run first.
-    if (!CAPTURE_HANDLER_BOUND) {
-      CAPTURE_HANDLER_BOUND = true;
-      document.addEventListener('submit', async function (event) {
-        try {
-          var formEl = event.target;
-          if (!formEl || formEl.tagName !== 'FORM') {
-            return;
-          }
+  // ── Bootstrap ───────────────────────────────────────────────────────────────
 
-          // Only act when the Square container is inside the submitting form.
-          var container = formEl.querySelector('#square-card-container');
-          if (!container) {
-            return;
-          }
+  window.onbeforeunload = null;
 
-          // Pull runtime state from the container's jQuery data store.
-          var $container = $(container);
-          var state = $container.data('squareState');
-          if (!state) {
-            return;
-          }
-
-          if (state.tokenized) {
-            return;
-          }
-
-          // If card isn't ready, allow normal submission (server will error).
-          // We don't block here because the user might still be on earlier wizard steps.
-          if (!state.card) {
-            return;
-          }
-
-          event.preventDefault();
-          if (typeof event.stopImmediatePropagation === 'function') {
-            event.stopImmediatePropagation();
-          }
-          event.stopPropagation();
-
-          var submitter = event.submitter || document.activeElement || null;
-          await state.tokenizeAndSubmit(event, submitter);
-        } catch (e) {
-          // If anything goes wrong, allow form submission to proceed.
-        }
-      }, true);
+  if (CRM.squarePayment.hasOwnProperty(script.name)) {
+    // Already loaded — just re-run HandleReload in case the billing block was replaced
+    if (window.civicrmSquareHandleReload) {
+      window.civicrmSquareHandleReload();
     }
-
-    // Store state on container for the capture-phase handler.
-    $cardContainer.data('squareState', {
-      get card() { return card; },
-      get tokenized() { return tokenized; },
-      tokenizeAndSubmit: tokenizeAndSubmit,
-      setTokenized: function (v) { tokenized = !!v; },
-    });
+    return;
   }
-})(CRM.$, CRM);
+
+  var crmPaymentObject = {};
+  crmPaymentObject[script.name] = script;
+  $.extend(CRM.squarePayment, crmPaymentObject);
+
+  CRM.squarePayment.registerScript(script.name);
+
+  // Re-init when the billing block is loaded via AJAX (webforms, backend switches)
+  $(document).ajaxComplete(function(event, xhr, settings) {
+    if (CRM.squarePayment.isAJAXPaymentForm(settings.url)) {
+      CRM.squarePayment.debugging(script.name, 'triggered via ajaxComplete');
+      load();
+    }
+  });
+
+  document.addEventListener('DOMContentLoaded', function() {
+    CRM.squarePayment.debugging(script.name, 'DOMContentLoaded');
+    load();
+  });
+
+  function load() {
+    if (window.civicrmSquareHandleReload) {
+      CRM.squarePayment.debugging(script.name, 'calling civicrmSquareHandleReload');
+      window.civicrmSquareHandleReload();
+    }
+  }
+
+  /**
+   * (Re-)initialize Square for the current billing block.
+   *
+   * Called on DOMContentLoaded and whenever the billing block is reloaded via
+   * AJAX (e.g. processor switch on a native form, or webform billing step load).
+   */
+  window.civicrmSquareHandleReload = function() {
+    CRM.squarePayment.scriptName = script.name;
+    CRM.squarePayment.debugging(script.name, 'HandleReload');
+
+    // Reset per-reload state so triggerEvent fires correctly after reload
+    $.each(CRM.squarePayment.scripts, function(name, obj) {
+      obj.reloadComplete = false;
+    });
+
+    CRM.squarePayment.form = CRM.squarePayment.getBillingForm();
+    if (!CRM.squarePayment.form) {
+      CRM.squarePayment.debugging(script.name, 'no billing form found');
+      return;
+    }
+
+    $(CRM.squarePayment.getBillingSubmit()).show();
+
+    var cardContainer = document.getElementById('square-card-container');
+    if (cardContainer) {
+      // Always call checkAndLoad — it clears the container and destroys any
+      // previous card instance before mounting a fresh one. This prevents the
+      // "card appears twice" issue when switching processors and coming back.
+      CRM.squarePayment.debugging(script.name, 'mounting Square card element');
+      script.checkAndLoad();
+    }
+    else {
+      // No card container → this form uses a different processor
+      script.notScriptProcessor();
+      CRM.squarePayment.triggerEvent('crmBillingFormReloadComplete', script.name);
+    }
+  };
+
+}(CRM.$, CRM.ts('org.uschess.square')));

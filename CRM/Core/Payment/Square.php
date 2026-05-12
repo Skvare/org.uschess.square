@@ -5,6 +5,9 @@ use Civi\Api4\ContributionRecur;
 use Square\SquareClient;
 use Square\Customers\Requests\ListCustomersRequest;
 use Square\Environments;
+use Civi\Payment\Exception\PaymentProcessorException;
+use Civi\Api4\PaymentprocessorWebhook;
+use Civi\Payment\PropertyBag;
 
 require_once E::path() . '/vendor/autoload.php';
 /**
@@ -19,23 +22,6 @@ require_once E::path() . '/vendor/autoload.php';
  * and pass a token/nonce back to this class via $params.
  */
 class CRM_Core_Payment_Square extends CRM_Core_Payment {
-
-  /**
-   * Singleton instances keyed by processor name + mode.
-   *
-   * @var array
-   */
-  protected static $_singleton = [];
-
-  /**
-   * @var string
-   */
-  protected string $_mode;
-
-  /**
-   * @var bool
-   */
-  protected bool $_isTest;
 
   /**
    * Square-supported cadence definitions.
@@ -93,33 +79,9 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    * @param array $paymentProcessor
    *   Row from civicrm_payment_processor.
    */
-  public function __construct($mode, &$paymentProcessor) {
+  public function __construct($mode, array &$paymentProcessor) {
     // Store processor config
     $this->_paymentProcessor = $paymentProcessor;
-
-    // CiviCRM typically passes 'live' or 'test' here, but we also honour the DB flag.
-    $this->_mode = $mode ?: 'live';
-
-    // Test mode if either the mode is explicitly 'test' or the processor is flagged is_test.
-    $this->_isTest = !empty($paymentProcessor['is_test']) ||
-      strtolower((string) $this->_mode) === 'test';
-  }
-
-  /**
-   * Return a singleton instance of this payment processor.
-   *
-   * @param string $mode
-   * @param array $paymentProcessor
-   *
-   * @return self
-   */
-  public static function &singleton($mode, &$paymentProcessor) {
-    $processorName = $paymentProcessor['name'] ?? 'Square';
-    $cacheKey = $processorName . '_' . $mode;
-    if (!isset(self::$_singleton[$cacheKey])) {
-      self::$_singleton[$cacheKey] = new self($mode, $paymentProcessor);
-    }
-    return self::$_singleton[$cacheKey];
   }
 
   /**
@@ -128,7 +90,75 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    * @return bool
    */
   protected function isTestMode() {
-    return !empty($this->_isTest);
+    return !empty($this->_paymentProcessor['is_test']);
+  }
+
+  /**
+   * Inject Square Web Payments SDK, square.js, and card container HTML into the
+   * billing block.
+   *
+   * This method is called by CiviCRM for ALL form types that render the billing
+   * block, including:
+   *  - Native contribution pages / event registration
+   *  - Drupal Webform AJAX billing block requests (CRM_Core_Payment_Form)
+   *  - Backend contribution/event forms
+   *
+   * We use CRM_Core_Region::instance('billing-block')->add() rather than
+   * \Civi::resources()->addScriptFile() because the latter does NOT work for
+   * AJAX billing block responses (e.g. Drupal webforms).
+   *
+   * @param \CRM_Core_Form $form
+   */
+  public function buildForm(&$form) {
+    $isSandbox = FALSE;
+    if ($this->_paymentProcessor['is_test']) {
+      $isSandbox = TRUE;
+    }
+
+    $sdkUrl = $isSandbox
+      ? 'https://sandbox.web.squarecdn.com/v1/square.js'
+      : 'https://web.squarecdn.com/v1/square.js';
+
+    $jsVars = [
+      'id'            => (int) ($this->_paymentProcessor['id'] ?? 0),
+      'applicationId' => $this->_paymentProcessor['user_name'] ?? '',
+      'locationId'    => $this->_paymentProcessor['signature'] ?? ($this->_paymentProcessor['password'] ?? ''),
+      'isSandbox'     => (bool) $isSandbox,
+    ];
+
+    // Add hidden field for the payment token
+    if (!$form->elementExists('square_payment_token')) {
+      $form->add('hidden', 'square_payment_token', '', ['id' => 'square_payment_token']);
+    }
+
+
+    // Square Web Payments SDK (loaded before our JS).
+    CRM_Core_Region::instance('billing-block')->add([
+      'scriptUrl' => $sdkUrl,
+      'weight' => -1,
+    ]);
+
+    // Our integration JS (loaded last so CRM.squarePayment utilities are ready).
+    CRM_Core_Region::instance('billing-block')->add([
+      'scriptUrl' => E::url('js/square.js'),
+      'weight' => 100,
+    ]);
+
+    // Publish settings to CRM.vars.orgUschessSquare (works for normal page load).
+    CRM_Core_Resources::singleton()->addSetting(['orgUschessSquare' => $jsVars]);
+
+    // Pass vars to Smarty so the template can emit an inline <script> fallback
+    // for Drupal webforms where addSetting() responses may not be processed.
+    $form->assign('squareJSVarsJson', json_encode($jsVars, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT));
+
+    // Billing block HTML: card container + error element + inline JS fallback.
+    CRM_Core_Region::instance('billing-block')->add([
+      'template' => E::path('templates/CRM/Core/Payment/Square/Card.tpl'),
+      'weight' => -1,
+    ]);
+
+    // Enable JS validation so submission only happens after fields are valid.
+    $form->assign('isJsValidate', TRUE);
   }
 
   /**
@@ -142,7 +172,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   protected function buildSquareClient(): SquareClient {
     $token = $this->getAccessToken();
 
-    $baseUrl = $this->_isTest
+    $baseUrl = $this->isTestMode()
       ? 'https://connect.squareupsandbox.com'
       : 'https://connect.squareup.com';
 
@@ -160,19 +190,8 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    * @throws \CRM_Core_Exception
    */
   protected function getAccessToken() {
-    if ($this->isTestMode()) {
-      $token = $this->_paymentProcessor['password'] ?? '';
-      if (empty($token)) {
-        throw new CRM_Core_Exception('Square sandbox access token (test_password) is not configured.');
-      }
-    }
-    else {
-      $token = $this->_paymentProcessor['password'] ?? '';
-      if (empty($token)) {
-        throw new CRM_Core_Exception('Square live access token (password) is not configured.');
-      }
-    }
-    return $token;
+
+    return trim($this->_paymentProcessor['password'] ?? '');
   }
 
   /**
@@ -183,16 +202,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    * @throws \CRM_Core_Exception
    */
   protected function getLocationId() {
-    if ($this->isTestMode()) {
-      $loc = $this->_paymentProcessor['test_signature'] ?? '';
-      if (empty($loc)) {
-        $loc = $this->_paymentProcessor['signature'] ?? '';
-      }
-    }
-    else {
-      $loc = $this->_paymentProcessor['signature'] ?? '';
-    }
-
+    $loc = trim($this->_paymentProcessor['signature'] ?? '');
     if (empty($loc)) {
       throw new CRM_Core_Exception('Square location ID is not configured on this payment processor.');
     }
@@ -258,16 +268,26 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    * @return string|null
    */
   public function checkConfig() {
+    $error = [];
+
+    if (!empty($error)) {
+      return implode('<p>', $error);
+    }
+    else {
+      return NULL;
+    }
+    /*
     try {
       $client = $this->buildSquareClient();
       $resp = $client->customers->list(new ListCustomersRequest([]));
       return NULL;
     }
     catch (\Exception $e) {
-      $msg = "Square checkConfig failure (" . ($this->_isTest ? 'SANDBOX' : 'PRODUCTION') . "): " . $e->getMessage();
+      $msg = "Square checkConfig failure (" . ($this->isTestMode() ? 'SANDBOX' : 'PRODUCTION') . "): " . $e->getMessage();
      // Civi::log()->debug($msg);
       return $msg;
     }
+    */
   }
 
   /**
@@ -925,7 +945,11 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     if (!$token) {
       throw new CRM_Core_Exception('Missing Square card token for recurring payments.');
     }
-
+    // Determine amount and currency.
+    $amount = $params['amount'] ?? $params['total_amount'] ?? NULL;
+    if (!$amount) {
+      throw new \CRM_Core_Exception('Missing contribution amount.');
+    }
     $params['square_payment_token'] = $token;
 
     // 2. Ensure we have a valid Recurring Contribution ID from CiviCRM.
@@ -937,7 +961,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     // 3. Ensure customer exists / or create one
     $customerId = $this->ensureSquareCustomer($params);
     if ($this->findSquareCustomerById($customerId)) {
-      // Civi::log()->debug("Square doRecurPayment: Found existing Square customer ID {$customerId} for CiviCRM recur ID {$recurId}");
+      Civi::log()->debug("Square doRecurPayment: Found existing Square customer ID {$customerId} for CiviCRM recur ID {$recurId}");
       $this->updateSquareCustomerDetails($customerId, $params);
     }
     else {
@@ -950,8 +974,10 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     }
     else {
       // If using 'square_payment_token', we assume it's already a card on file ID.
-      $cardId = $token;
+      //$cardId = $token;
+      $cardId = $this->createCardOnFile($customerId, $token);
     }
+    Civi::log()->debug("Square doRecurPayment: Using card ID {$cardId} for customer ID {$customerId} and CiviCRM recur ID {$recurId}");
 
     // 5. Determine plan ID
     $planVariationId = $this->getPlanVariationIdForParams($params);
@@ -962,7 +988,8 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     $startDate = (new DateTime('tomorrow'))->format('Y-m-d');
 
     // 7. Generate idempotency key tied to the recurring record so re-posts don't duplicate.
-    $idempotencyKey = "recur_{$recurId}_" . md5($customerId . $cardId . microtime(TRUE));
+    $idempotencyKey = "rc_{$recurId}_" . md5($customerId . $cardId .
+        microtime(TRUE));
     $source = [
       'contact_id' => (string) ($params['contactID'] ?? $params['contact_id'] ?? ''),
       'recur_id' => (string) $recurId,
@@ -1003,10 +1030,12 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     $initialPaymentNeeded = !empty($params['send_receipt']) || !empty($params['is_recur']);
     
     if ($initialPaymentNeeded) {
+      $amountCents = (int) round(((float) $amount) * 100);
+      $currency = $params['currency'] ?? $params['currencyID'] ?? 'USD';
       try {
         // Make an initial one-time payment for the first billing cycle
         $initialPaymentBody = [
-          'idempotency_key' => 'initial_' . $idempotencyKey,
+          'idempotency_key' => 'init_' . $idempotencyKey,
           'source_id' => $cardId,
           'amount_money' => [
             'amount' => $amountCents,
@@ -1019,7 +1048,21 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
         $paymentResp = $this->squareRequest('POST', '/v2/payments', $initialPaymentBody);
         if (!empty($paymentResp['payment']['id'])) {
-
+          $transactionId = $paymentResp['payment']['id'];
+          $status = $paymentResp['payment']['status'] ?? 'UNKNOWN';
+          ContributionRecur::update(FALSE)
+            ->addWhere('id', '=', $recurId)
+            ->addValue('processor_id', $subscriptionId)
+            ->addValue('trxn_id', $subscriptionId)
+            ->addValue('contribution_status_id', 5) // In Progress
+            ->execute();
+          Civi::log()->debug("Square initial payment for subscription {$subscriptionId} created with transaction ID {$transactionId} and status {$status}");
+          return [
+            'payment_status_id' => 1,               // Completed
+            'contribution_status_id' => 1,          // Completed
+            'trxn_id' => $transactionId,
+            'subscription_id' => $subscriptionId,
+          ];
         }
       }
       catch (Exception $e) {
@@ -1181,7 +1224,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     }
 
     $decoded = json_decode($raw, TRUE);
-   // Civi::log()->debug('Square squareRequest: Decoded response=' . json_encode($decoded, JSON_UNESCAPED_SLASHES));
+    // Civi::log()->debug('Square squareRequest: Decoded response=' . json_encode($decoded, JSON_UNESCAPED_SLASHES));
     
     if ($decoded === NULL) {
       $msg = 'Failed to decode Square API response JSON.';
@@ -1694,18 +1737,60 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
-   * Cancel a Square subscription.
+   * Cancel a recurring contribution at Square.
    *
-   * You would typically call this from a hook when a recurring
-   * contribution is cancelled in CiviCRM.
+   * Overrides CRM_Core_Payment::doCancelRecurring() so CiviCRM core calls this
+   * directly and never falls back to the legacy cancelSubscription() path (which
+   * used an incompatible two-argument signature causing a TypeError).
    *
-   * @param string $subscriptionId
+   * @param \Civi\Payment\PropertyBag $propertyBag
    *
-   * @throws \CRM_Core_Exception
+   * @return array
+   * @throws \Civi\Payment\Exception\PaymentProcessorException
    */
-  public function cancelSubscription($subscriptionId) {
+  public function doCancelRecurring(PropertyBag $propertyBag): array {
+    if (!$propertyBag->has('isNotifyProcessorOnCancelRecur')) {
+      $propertyBag->setIsNotifyProcessorOnCancelRecur(TRUE);
+    }
+
+    if (!$propertyBag->getIsNotifyProcessorOnCancelRecur()) {
+      return ['message' => E::ts('Successfully cancelled the subscription in CiviCRM ONLY.')];
+    }
+
+    if (!$propertyBag->has('recurProcessorID')) {
+      $errorMessage = E::ts('The recurring contribution cannot be cancelled (no Square subscription ID found).');
+      \Civi::log('square')->error($errorMessage);
+      throw new PaymentProcessorException($errorMessage);
+    }
+
+    try {
+      $this->cancelSquareSubscription($propertyBag->getRecurProcessorID());
+    }
+    catch (PaymentProcessorException $e) {
+      throw $e;
+    }
+    catch (\Exception $e) {
+      $errorMessage = E::ts('Failed to cancel the Square subscription: ') . $e->getMessage();
+      \Civi::log('square')->error($errorMessage);
+      throw new PaymentProcessorException($errorMessage, 0, $e);
+    }
+
+    return ['message' => E::ts('Successfully cancelled the Square subscription.')];
+  }
+
+  /**
+   * Cancel a Square subscription by its processor ID.
+   *
+   * Low-level helper used by doCancelRecurring() and by the civicrm_post hook.
+   * Makes the Square API call directly without PropertyBag logic.
+   *
+   * @param string $subscriptionId  Square subscription ID (e.g. "SUB_xxx").
+   *
+   * @throws \Civi\Payment\Exception\PaymentProcessorException
+   */
+  public function cancelSquareSubscription(string $subscriptionId): void {
     if (empty($subscriptionId)) {
-      throw new CRM_Core_Exception('Missing subscription ID to cancel.');
+      throw new PaymentProcessorException(E::ts('Cannot cancel Square subscription: empty subscription ID.'));
     }
 
     $this->squareRequest('POST', "/v2/subscriptions/{$subscriptionId}/cancel", []);
@@ -1829,6 +1914,31 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
+   * Does this processor support cancelling recurring contributions through code.
+   *
+   * If the processor returns true it must be possible to take action from within CiviCRM
+   * that will result in no further payments being processed.
+   *
+   * @return bool
+   */
+  protected function supportsCancelRecurring() {
+    return TRUE;
+  }
+
+  /**
+   * Does the processor support the user having a choice as to whether to cancel the recurring with the processor?
+   *
+   * If this returns TRUE then there will be an option to send a cancellation request in the cancellation form.
+   *
+   * This would normally be false for processors where CiviCRM maintains the schedule.
+   *
+   * @return bool
+   */
+  protected function supportsCancelRecurringNotifyOptional() {
+    return TRUE;
+  }
+
+  /**
    * Advertise the configuration fields used by this processor.
    */
   public static function getPaymentProcessorSettings() {
@@ -1899,77 +2009,6 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     ];
   }
 
-  /**
-   * Inject Square payment form elements and scripts.
-   */
-  public function buildForm(&$form) {
-    $formName = $form->getName();
-
-    // Add test_url_button to suppress CiviCRM core warning
-    if (!$form->elementExists('test_url_button')) {
-      $form->addElement('hidden', 'test_url_button', '', ['id' => 'test_url_button']);
-    }
-
-    // Add is_test checkbox to the payment processor settings form
-    if (!$form->elementExists('is_test') && $formName === 'CRM_Admin_Form_PaymentProcessor') {
-      $form->add('checkbox', 'is_test', ts('Is Test Mode?'), NULL, FALSE);
-    }
-
-    // Add hidden field for the payment token
-    if (!$form->elementExists('square_payment_token')) {
-      $form->add('hidden', 'square_payment_token', '', ['id' => 'square_payment_token']);
-    }
-
-    // Inject the container where Square will mount the card fields + error box.
-    $markup = '
-      <div id="square-card-container"></div>
-      <div id="square-card-errors" class="messages error" style="display:none"></div>
-    ';
-
-    $resources = CRM_Core_Resources::singleton();
-
-    // Decide sandbox vs live SDK URL based on processor mode.
-    $isSandbox = !empty($this->_mode) && $this->_mode === 'test';
-
-    $sdkUrl = $isSandbox
-      ? 'https://sandbox.web.squarecdn.com/v1/square.js'
-      : 'https://web.squarecdn.com/v1/square.js';
-
-    // Load Square's JS SDK.
-    CRM_Core_Region::instance('billing-block')->addScriptUrl($sdkUrl);
-
-    // Load our own integration JS from the extension.
-    CRM_Core_Region::instance('billing-block')->add([
-      'scriptFile' => [
-        'org.uschess.square',
-        'js/square.js',
-      ],
-      // Load after other scripts on form (default = 1)
-      'weight' => 100,
-    ]);
-    // Pass settings to JS via window variables (more reliable than CRM.vars)
-    $inlineScript = "
-      window.squareApplicationId = '" . addslashes($this->_paymentProcessor['user_name'] ?? '') . "';
-      window.squareLocationId = '" . addslashes($this->_paymentProcessor['signature'] ?? ($this->_paymentProcessor['password'] ?? '')) . "';
-      window.squareIsSandbox = " . ($isSandbox ? 'true' : 'false') . ";
-    ";
-    CRM_Core_Region::instance('billing-block')->addScript($inlineScript);
-
-    // Also pass settings to JS via CRM.vars for compatibility.
-    $settings = [
-      'applicationId' => $this->_paymentProcessor['user_name'] ?? '',
-      'locationId' => $this->_paymentProcessor['signature'] ?? ($this->_paymentProcessor['password'] ?? ''),
-      'isSandbox' => $isSandbox,
-    ];
-    CRM_Core_Region::instance('billing-block')->addSetting([
-      'orgUschessSquare' => $settings,
-    ]);
-
-    // Attach this to the billing block region so it appears in the right place.
-    CRM_Core_Region::instance('billing-block')->add([
-      'markup' => $markup,
-    ]);
-  }
 
   /**
    * Validate payment processor settings on save.
@@ -2363,6 +2402,78 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    */
   public function getPaymentFormFieldsMetadata(): array {
     return [];
+  }
+
+  /**
+   * Process incoming payment notification (IPN).
+   *
+   * Called by CiviCRM core when it receives a POST to:
+   *   civicrm/payment/ipn/{processor_id}
+   *
+   * Validates the Square webhook signature, then delegates event processing
+   * to CRM_Core_Payment_SquareIPN.
+   */
+  public function handlePaymentNotification() {
+    http_response_code(200);
+    $rawData = file_get_contents('php://input');
+
+    if (!$this->validateWebhookSignature($rawData, getallheaders())) {
+      Civi::log()->error('Square IPN: webhook signature validation failed.');
+      http_response_code(401);
+      exit();
+    }
+
+    $payload = json_decode($rawData, TRUE);
+    if (empty($payload)) {
+      Civi::log()->error('Square IPN: invalid JSON body received.');
+      http_response_code(400);
+      exit();
+    }
+
+    $ipn = new CRM_Core_Payment_SquareIPN($this);
+    if (!$ipn->onReceiveWebhook($payload)) {
+      http_response_code(500);
+    }
+  }
+
+  /**
+   * Validate the Square webhook HMAC-SHA256 signature.
+   *
+   * Square signs webhooks as:
+   *   base64( HMAC-SHA256( notification_url + raw_body, signature_key ) )
+   *
+   * @param string $rawData Raw request body.
+   * @param array $headers HTTP headers from getallheaders().
+   * @return bool
+   */
+  protected function validateWebhookSignature(string $rawData, array $headers): bool {
+    $key = $this->getWebhookSignatureKey();
+    if (!$key) {
+      Civi::log()->error('Square IPN: webhook signature key not configured (check "Subject" field on payment processor).');
+      return FALSE;
+    }
+
+    // Header keys are case-insensitive; normalise to lowercase.
+    $normalised = [];
+    foreach ($headers as $k => $v) {
+      $normalised[strtolower($k)] = $v;
+    }
+
+    $provided = $normalised['x-square-signature'] ?? NULL;
+    if (!$provided) {
+      Civi::log()->error('Square IPN: X-Square-Signature header missing.');
+      return FALSE;
+    }
+
+    $notifyUrl = $this->getNotifyUrl();
+    $expected  = base64_encode(hash_hmac('sha256', $notifyUrl . $rawData, $key, TRUE));
+
+    if (!hash_equals($expected, $provided)) {
+      Civi::log()->error("Square IPN: signature mismatch. url={$notifyUrl}");
+      return FALSE;
+    }
+
+    return TRUE;
   }
 
 }
