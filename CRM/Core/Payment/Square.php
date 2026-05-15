@@ -6,7 +6,6 @@ use Square\SquareClient;
 use Square\Customers\Requests\ListCustomersRequest;
 use Square\Environments;
 use Civi\Payment\Exception\PaymentProcessorException;
-use Civi\Api4\PaymentprocessorWebhook;
 use Civi\Payment\PropertyBag;
 
 require_once E::path() . '/vendor/autoload.php';

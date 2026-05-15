@@ -21,7 +21,6 @@ function org_uschess_square_civicrm_xmlMenu(&$files) {
 function org_uschess_square_civicrm_install() {
   _org_uschess_square_civix_civicrm_install();
   org_uschess_square_create_custom_fields();
-  org_uschess_square_create_webhook_tables();
 }
 
 /**
@@ -354,47 +353,4 @@ function org_uschess_square_civicrm_post($op, $objectName, $objectId, &$objectRe
   }
 }
 
-/**
- * Create webhook tracking tables on install.
- */
-function org_uschess_square_create_webhook_tables() {
-  try {
-    $db = CRM_Core_DAO::getDatabaseConnection();
-
-    // Create webhook event tracking table
-    $sql = "
-      CREATE TABLE IF NOT EXISTS civicrm_square_webhook_event (
-        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-        event_id VARCHAR(255) NOT NULL UNIQUE,
-        processed_at DATETIME NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_event_id (event_id),
-        INDEX idx_processed_at (processed_at)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    ";
-    $db->query($sql);
-
-    // Create webhook delivery log table
-    $sql = "
-      CREATE TABLE IF NOT EXISTS civicrm_square_webhook_delivery (
-        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-        event_id VARCHAR(255),
-        event_type VARCHAR(100) NOT NULL,
-        message TEXT,
-        http_status INT,
-        delivered_at DATETIME NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_event_id (event_id),
-        INDEX idx_event_type (event_type),
-        INDEX idx_delivered_at (delivered_at)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    ";
-    $db->query($sql);
-
-    CRM_Core_Error::debug_log_message('Square: Webhook tables created successfully');
-  }
-  catch (Exception $e) {
-    CRM_Core_Error::debug_log_message('Square: Error creating webhook tables: ' . $e->getMessage());
-  }
-}
 
