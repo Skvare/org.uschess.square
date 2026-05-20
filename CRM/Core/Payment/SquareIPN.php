@@ -60,6 +60,13 @@ class CRM_Core_Payment_SquareIPN {
   protected $payment_id = NULL;
 
   /**
+   * The data provided by the IPN
+   *
+   * @var array|Object|string
+   */
+  protected $data;
+
+  /**
    * @param CRM_Core_Payment_Square $processor
    */
   public function __construct($processor) {
@@ -94,10 +101,10 @@ class CRM_Core_Payment_SquareIPN {
    * @return bool TRUE on success.
    */
   public function onReceiveWebhook(array $payload): bool {
-    $eventId   = $payload['event_id'] ?? NULL;
+    $eventId = $payload['event_id'] ?? NULL;
     $eventType = $payload['type'] ?? 'unknown';
 
-    $this->event_id   = $eventId;
+    $this->event_id = $eventId;
     $this->event_type = $eventType;
 
     // Ignore event types we do not handle (return 200 so Square does not retry).
@@ -107,7 +114,7 @@ class CRM_Core_Payment_SquareIPN {
     }
 
     $this->setInputParameters($payload, $eventType);
-    $identifier  = $this->getWebhookIdentifier();
+    $identifier = $this->getWebhookIdentifier();
     $processorId = $this->_paymentProcessor->getID();
 
     // Deduplication: skip if we already have an unprocessed record for this event_id.
@@ -129,7 +136,7 @@ class CRM_Core_Payment_SquareIPN {
       ->addValue('trigger', $eventType)
       ->addValue('identifier', $identifier)
       ->addValue('event_id', (string) ($eventId ?? ''))
-      ->addValue('data', $payload)
+      ->addValue('data', $this->getData())
       ->execute()
       ->first();
 
@@ -152,17 +159,17 @@ class CRM_Core_Payment_SquareIPN {
     }
 
     $eventType = $webhookEvent['trigger'];
-    $this->event_id   = $webhookEvent['event_id'];
+    $this->event_id = $webhookEvent['event_id'];
     $this->event_type = $eventType;
 
     $this->setInputParameters($payload, $eventType);
 
-    $ok      = FALSE;
+    $ok = FALSE;
     $message = '';
 
     try {
       $this->processWebhookEvent($payload, $eventType);
-      $ok      = TRUE;
+      $ok = TRUE;
       $message = 'Processed successfully';
     }
     catch (Exception $e) {
@@ -309,9 +316,9 @@ class CRM_Core_Payment_SquareIPN {
    * @param array $invoice Invoice object from Square webhook payload.
    */
   protected function handleInvoiceCreated(array $invoice): void {
-    $invoiceId      = $invoice['id'] ?? NULL;
+    $invoiceId = $invoice['id'] ?? NULL;
     $subscriptionId = $invoice['subscription_id'] ?? NULL;
-    $status         = strtoupper($invoice['status'] ?? '');
+    $status = strtoupper($invoice['status'] ?? '');
 
     if (!$invoiceId || !$subscriptionId) {
       Civi::log()->debug('Square IPN: invoice.created missing invoice ID or subscription_id.');
@@ -346,8 +353,8 @@ class CRM_Core_Payment_SquareIPN {
       return;
     }
 
-    $money    = $invoice['payment_requests'][0]['computed_amount_money'] ?? NULL;
-    $amount   = $money ? (((float) $money['amount']) / 100) : 0.0;
+    $money = $invoice['payment_requests'][0]['computed_amount_money'] ?? NULL;
+    $amount = $money ? (((float) $money['amount']) / 100) : 0.0;
     $currency = $money['currency'] ?? $recur['currency'] ?? 'USD';
 
     \Civi\Api4\Contribution::create(FALSE)
@@ -370,7 +377,7 @@ class CRM_Core_Payment_SquareIPN {
    * @param array $invoice Invoice object from Square webhook payload.
    */
   protected function handleInvoicePaymentFailed(array $invoice): void {
-    $invoiceId      = $invoice['id'] ?? NULL;
+    $invoiceId = $invoice['id'] ?? NULL;
     $subscriptionId = $invoice['subscription_id'] ?? NULL;
 
     if (!$invoiceId) {
@@ -411,8 +418,8 @@ class CRM_Core_Payment_SquareIPN {
       return;
     }
 
-    $money    = $invoice['payment_requests'][0]['computed_amount_money'] ?? NULL;
-    $amount   = $money ? (((float) $money['amount']) / 100) : 0.0;
+    $money = $invoice['payment_requests'][0]['computed_amount_money'] ?? NULL;
+    $amount = $money ? (((float) $money['amount']) / 100) : 0.0;
     $currency = $money['currency'] ?? $recur['currency'] ?? 'USD';
 
     \Civi\Api4\Contribution::create(FALSE)
@@ -427,6 +434,20 @@ class CRM_Core_Payment_SquareIPN {
       ->execute();
 
     Civi::log()->debug("Square IPN: Created Failed contribution for invoice {$invoiceId}.");
+  }
+
+  /**
+   * @param Object|array|string $data
+   */
+  public function setData(object|array|string $data) {
+    $this->data = $data;
+  }
+
+  /**
+   * @return object|array|string
+   */
+  public function getData(): object|array|string {
+    return $this->data;
   }
 
 }
