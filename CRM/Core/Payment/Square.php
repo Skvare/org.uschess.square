@@ -2458,17 +2458,18 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       $normalised[strtolower($k)] = $v;
     }
 
-    $provided = $normalised['x-square-signature'] ?? NULL;
+    $provided = $normalised['x-square-hmacsha256-signature'] ?? NULL;
     if (!$provided) {
       Civi::log()->error('Square IPN: X-Square-Signature header missing.');
       return FALSE;
     }
 
     $notifyUrl = $this->getNotifyUrl();
-    $expected  = base64_encode(hash_hmac('sha256', $notifyUrl . $rawData, $key, TRUE));
+    $expected = base64_encode(hash_hmac('sha256', $notifyUrl . $rawData, $key, TRUE));
 
     if (!hash_equals($expected, $provided)) {
       Civi::log()->error("Square IPN: signature mismatch. url={$notifyUrl}");
+      Civi::log()->error("Square IPN: signature validation failed. Expected {$expected}, got {$provided}");
       return FALSE;
     }
 
