@@ -312,6 +312,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     $existing = \Civi\Api4\Contribution::get(FALSE)
       ->addSelect('id')
       ->addWhere('trxn_id', '=', $paymentId)
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->execute()
       ->first();
 
@@ -333,6 +334,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       $refContribution = \Civi\Api4\Contribution::get(FALSE)
         ->addSelect('id', 'contact_id')
         ->addWhere('id', '=', (int) $referenceId)
+        ->addWhere('is_test', 'IN', [TRUE, FALSE])
         ->execute()
         ->first();
 
@@ -381,6 +383,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     $contribution = \Civi\Api4\Contribution::get(FALSE)
       ->addSelect('id')
       ->addWhere('trxn_id', '=', $paymentId)
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->execute()
       ->first();
 
@@ -414,11 +417,12 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     $recur = \Civi\Api4\ContributionRecur::get(FALSE)
       ->addSelect('id', 'amount', 'contribution_status_id')
       ->addWhere('processor_id', '=', $id)
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->execute()
       ->first();
 
     if (!$recur) {
-      // Civi::log()->debug("Square syncSubscriptionFromWebhook(): no matching recur for {$id}");
+      Civi::log()->debug("Square syncSubscriptionFromWebhook(): no matching recur for {$id}");
       return;
     }
 
@@ -460,13 +464,14 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
     // Find recur.
     $recur = \Civi\Api4\ContributionRecur::get(FALSE)
-      ->addSelect('id', 'contact_id', 'financial_type_id', 'currency')
+      ->addSelect('id', 'contact_id', 'financial_type_id', 'currency', 'is_test')
       ->addWhere('processor_id', '=', $subscriptionId)
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->execute()
       ->first();
 
     if (!$recur) {
-      // Civi::log()->debug("Square syncInvoiceFromSquare(): no recur for subscription {$subscriptionId}");
+      Civi::log()->debug("Square syncInvoiceFromSquare(): no recur for subscription {$subscriptionId}");
       return;
     }
 
@@ -474,6 +479,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     $existing = \Civi\Api4\Contribution::get(FALSE)
       ->addSelect('id')
       ->addWhere('invoice_id', '=', $invoiceId)
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->execute()
       ->first();
 
@@ -493,6 +499,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       ->addValue('currency', $currency)
       ->addValue('contribution_status_id', 1)
       ->addValue('invoice_id', $invoiceId)
+      ->addValue('is_test', $recur['is_test'])
       ->addValue('source', 'Square Invoice (Webhook)')
       ->execute();
   }
@@ -527,13 +534,14 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     // 2. Find local CiviCRM recurring contribution
     $recur = ContributionRecur::get(FALSE)
       ->addWhere('processor_id', '=', $squareSubscriptionId)
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->addSelect('id', 'amount', 'currency', 'contribution_status_id')
       ->execute()
       ->first();
 
     if (empty($recur)) {
       // No such recurring record exists — log and stop
-      // Civi::log()->debug("Square sync: No local contribution_recur record found for subscription {$squareSubscriptionId}");
+      Civi::log()->debug("Square sync: No local contribution_recur record found for subscription {$squareSubscriptionId}");
       return;
     }
 
@@ -560,7 +568,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
         ->addValues($updates)
         ->execute();
 
-      // Civi::log()->debug("Square sync: Updated recurring contribution {$recurId} from subscription {$squareSubscriptionId}");
+      Civi::log()->debug("Square sync: Updated recurring contribution {$recurId} from subscription {$squareSubscriptionId}");
     }
   }
 
@@ -640,6 +648,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     if (!empty($params['contributionRecurID'])) {
       $recur = \Civi\Api4\ContributionRecur::get(FALSE)
         ->addWhere('id', '=', (int) $params['contributionRecurID'])
+        ->addWhere('is_test', 'IN', [TRUE, FALSE])
         ->addSelect('financial_type_id')
         ->execute()
         ->first();
@@ -688,7 +697,8 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     // Find matching Civi recurring record
     $recur = \Civi\Api4\ContributionRecur::get(FALSE)
       ->addWhere('processor_id', '=', $subscriptionId)
-      ->addSelect('id', 'contact_id')
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
+      ->addSelect('id', 'contact_id', 'is_test')
       ->execute()
       ->first();
 
@@ -703,6 +713,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     // Check for duplicate contribution by invoice ID
     $existing = \Civi\Api4\Contribution::get(FALSE)
       ->addWhere('invoice_id', '=', $invoiceId)
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->addSelect('id')
       ->execute()
       ->first();
@@ -727,6 +738,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       ->addValue('contribution_recur_id', $recurId)
       ->addValue('contribution_status_id', 1)
       ->addValue('invoice_id', $invoiceId)
+      ->addValue('is_test', $recur['is_test'])
       ->addValue('source', 'Square Recurring Payment')
       ->execute();
 
@@ -752,12 +764,13 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     // Find associated recurring contribution.
     $recur = \Civi\Api4\ContributionRecur::get(FALSE)
       ->addWhere('processor_id', '=', $subscriptionId)
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->addSelect('id')
       ->execute()
       ->first();
 
     if (empty($recur)) {
-      // Civi::log()->debug("Square webhook: No matching contribution_recur found for cancelled subscription {$subscriptionId}.");
+      Civi::log()->debug("Square webhook: No matching contribution_recur found for cancelled subscription {$subscriptionId}.");
       return;
     }
 
@@ -769,7 +782,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       ->addValue('contribution_status_id', 3)
       ->execute();
 
-    // Civi::log()->debug("Square webhook: Marked recurring contribution {$recurId} as Cancelled for subscription {$subscriptionId}.");
+    Civi::log()->debug("Square webhook: Marked recurring contribution {$recurId} as Cancelled for subscription {$subscriptionId}.");
   }
 
   /**
@@ -2269,6 +2282,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     if ($referenceId && ctype_digit((string) $referenceId)) {
       $contribution = \Civi\Api4\Contribution::get(FALSE)
         ->addWhere('id', '=', (int) $referenceId)
+        ->addWhere('is_test', 'IN', [TRUE, FALSE])
         ->addSelect('contact_id')
         ->execute()
         ->first();
@@ -2360,6 +2374,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     // Find the recurring contribution linked to this subscription
     $recur = ContributionRecur::get(FALSE)
       ->addWhere('processor_id', '=', $squareSubscriptionId)
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->addSelect('id', 'contribution_status_id')
       ->execute()
       ->first();

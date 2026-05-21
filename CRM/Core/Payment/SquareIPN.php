@@ -333,7 +333,7 @@ class CRM_Core_Payment_SquareIPN {
 
     $recur = \Civi\Api4\ContributionRecur::get(FALSE)
       ->addWhere('processor_id', '=', $subscriptionId)
-      ->addSelect('id', 'contact_id', 'financial_type_id', 'currency')
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->execute()
       ->first();
 
@@ -346,6 +346,7 @@ class CRM_Core_Payment_SquareIPN {
     $existing = \Civi\Api4\Contribution::get(FALSE)
       ->addSelect('id')
       ->addWhere('invoice_id', '=', $invoiceId)
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->execute()
       ->first();
 
@@ -365,6 +366,7 @@ class CRM_Core_Payment_SquareIPN {
       ->addValue('currency', $currency)
       ->addValue('contribution_status_id', 2) // Pending
       ->addValue('invoice_id', $invoiceId)
+      ->addValue('is_test', $recur['is_test'])
       ->addValue('source', 'Square Invoice (Webhook)')
       ->execute();
 
@@ -409,6 +411,7 @@ class CRM_Core_Payment_SquareIPN {
 
     $recur = \Civi\Api4\ContributionRecur::get(FALSE)
       ->addWhere('processor_id', '=', $subscriptionId)
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->addSelect('id', 'contact_id', 'financial_type_id', 'currency')
       ->execute()
       ->first();
