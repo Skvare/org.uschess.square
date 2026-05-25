@@ -310,11 +310,12 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     $amount = $money && isset($money['amount']) ? ($money['amount'] / 100) : NULL;
     $feeAmount = $feeMoney !== NULL ? ($feeMoney / 100) : NULL;
     $currency = $money['currency'] ?? 'USD';
+    $orderID = $payment['order_id'] ?? NULL;
 
-    // 1. Try to find existing contribution.
+    // 1. Try to find existing contribution using order id as invoice number
     $existing = \Civi\Api4\Contribution::get(FALSE)
       ->addSelect('id')
-      ->addWhere('trxn_id', '=', $paymentId)
+      ->addWhere('invoice_number', '=', $orderID)
       ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->execute()
       ->first();
@@ -339,15 +340,15 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     $contactId = NULL;
 
     if ($referenceId && ctype_digit((string) $referenceId)) {
-      $refContribution = \Civi\Api4\Contribution::get(FALSE)
-        ->addSelect('id', 'contact_id')
+      $refRecurContribution = \Civi\Api4\ContributionRecur::get(FALSE)
+        ->addSelect('id', 'contact_id', 'is_test', 'financial_type_id')
         ->addWhere('id', '=', (int) $referenceId)
         ->addWhere('is_test', 'IN', [TRUE, FALSE])
         ->execute()
         ->first();
 
-      if ($refContribution) {
-        $contactId = (int) $refContribution['contact_id'];
+      if ($refRecurContribution) {
+        $contactId = (int) $refRecurContribution['contact_id'];
       }
     }
 
@@ -363,6 +364,13 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     // Default financial type is Donation (ID=1) unless better mapping is added later.
     $financialTypeId = 1;
 
+    $applicationId = $payment['application_details']['application_id'] ?? '';
+    $isTest = str_contains($applicationId, 'sandbox') ? 1 : 0;
+    if (!empty($refRecurContribution)) {
+      $isTest = $refRecurContribution['is_test'] ? 1 : 0;
+      $financialTypeId = $refRecurContribution['financial_type_id'] ?? $financialTypeId;
+    }
+
     $create = \Civi\Api4\Contribution::create(FALSE)
       ->addValue('contact_id', $contactId)
       ->addValue('financial_type_id', $financialTypeId)
@@ -371,9 +379,13 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       ->addValue('contribution_status_id', $this->mapPaymentStatus($status))
       ->addValue('payment_instrument_id', $this->mapPaymentInstrument($sourceType))
       ->addValue('trxn_id', $paymentId)
+      ->addValue('is_test', $isTest)
       ->addValue('source', 'Square Payment (Webhook)');
     if ($feeAmount !== NULL) {
       $create->addValue('fee_amount', $feeAmount);
+    }
+    if ($orderID !== NULL) {
+      $create->addValue('invoice_number', $orderID);
     }
     $create->execute();
   }

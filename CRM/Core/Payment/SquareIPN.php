@@ -357,7 +357,7 @@ class CRM_Core_Payment_SquareIPN {
     $money = $invoice['payment_requests'][0]['computed_amount_money'] ?? NULL;
     $amount = $money ? (((float) $money['amount']) / 100) : 0.0;
     $currency = $money['currency'] ?? $recur['currency'] ?? 'USD';
-
+    $orderID = $invoice['order_id'] ?? NULL;
     \Civi\Api4\Contribution::create(FALSE)
       ->addValue('contact_id', $recur['contact_id'])
       ->addValue('contribution_recur_id', $recur['id'])
@@ -366,6 +366,7 @@ class CRM_Core_Payment_SquareIPN {
       ->addValue('currency', $currency)
       ->addValue('contribution_status_id', 2) // Pending
       ->addValue('invoice_id', $invoiceId)
+      ->addValue('invoice_number', $orderID)
       ->addValue('is_test', $recur['is_test'])
       ->addValue('source', 'Square Invoice (Webhook)')
       ->execute();
