@@ -449,10 +449,12 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     }
 
     if ($updates) {
-      \Civi\Api4\ContributionRecur::update(FALSE)
-        ->addWhere('id', '=', $recur['id'])
-        ->addValues($updates)
-        ->execute();
+      $q = \Civi\Api4\ContributionRecur::update(FALSE)
+        ->addWhere('id', '=', $recur['id']);
+      foreach ($updates as $field => $value) {
+        $q->addValue($field, $value);
+      }
+      $q->execute();
     }
   }
 
@@ -575,10 +577,12 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
     // 6. Apply updates
     if (!empty($updates)) {
-      ContributionRecur::update(FALSE)
-        ->addWhere('id', '=', $recurId)
-        ->addValues($updates)
-        ->execute();
+      $q = ContributionRecur::update(FALSE)
+        ->addWhere('id', '=', $recurId);
+      foreach ($updates as $field => $value) {
+        $q->addValue($field, $value);
+      }
+      $q->execute();
 
       Civi::log()->debug("Square sync: Updated recurring contribution {$recurId} from subscription {$squareSubscriptionId}");
     }
