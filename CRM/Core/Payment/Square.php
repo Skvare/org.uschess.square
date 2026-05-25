@@ -302,6 +302,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     }
 
     $status = $payment['status'] ?? 'UNKNOWN';
+    $sourceType = $payment['source_type'] ?? NULL;
 
     // Determine amount/currency.
     $money = $payment['amount_money'] ?? NULL;
@@ -323,7 +324,8 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
         ->addWhere('id', '=', $existing['id'])
         ->addValue('total_amount', $amount)
         ->addValue('currency', $currency)
-        ->addValue('contribution_status_id', $this->mapPaymentStatus($status));
+        ->addValue('contribution_status_id', $this->mapPaymentStatus($status))
+        ->addValue('payment_instrument_id', $this->mapPaymentInstrument($sourceType));
       if ($feeAmount !== NULL) {
         $update->addValue('fee_amount', $feeAmount);
       }
@@ -367,6 +369,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       ->addValue('total_amount', $amount)
       ->addValue('currency', $currency)
       ->addValue('contribution_status_id', $this->mapPaymentStatus($status))
+      ->addValue('payment_instrument_id', $this->mapPaymentInstrument($sourceType))
       ->addValue('trxn_id', $paymentId)
       ->addValue('source', 'Square Payment (Webhook)');
     if ($feeAmount !== NULL) {
@@ -692,6 +695,12 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       return;
     }
 
+    // Fix 1: guard against non-subscription invoices (same as syncInvoiceFromSquare).
+    if (!$subscriptionId) {
+      Civi::log()->debug("Square webhook: invoice {$invoiceId} has no subscription_id, skipping.");
+      return;
+    }
+
     // Load subscription payment info
     $total = $invoice['payment_requests'][0]['computed_amount_money']['amount'] ?? NULL;
     $currency = $invoice['payment_requests'][0]['computed_amount_money']['currency'] ?? 'USD';
@@ -703,11 +712,16 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
     $amount = ((float) $total) / 100;
 
+    // Fix 4: use the invoice updated_at as receive_date rather than defaulting to today.
+    $receiveDate = !empty($invoice['updated_at'])
+      ? date('Y-m-d H:i:s', strtotime($invoice['updated_at']))
+      : date('Y-m-d H:i:s');
+
     // Find matching Civi recurring record
     $recur = \Civi\Api4\ContributionRecur::get(FALSE)
       ->addWhere('processor_id', '=', $subscriptionId)
       ->addWhere('is_test', 'IN', [TRUE, FALSE])
-      ->addSelect('id', 'contact_id', 'is_test')
+      ->addSelect('id', 'contact_id', 'is_test', 'payment_instrument_id')
       ->execute()
       ->first();
 
@@ -718,6 +732,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
     $contactId = (int) $recur['contact_id'];
     $recurId = (int) $recur['id'];
+    $paymentInstrumentId = $recur['payment_instrument_id'] ?? 1;
 
     // Check for duplicate contribution by invoice ID
     $existing = \Civi\Api4\Contribution::get(FALSE)
@@ -739,8 +754,10 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
           ->addWhere('id', '=', $existing['id'])
           ->addValue('total_amount', $amount)
           ->addValue('currency', $currency)
+          ->addValue('receive_date', $receiveDate)
           ->addValue('contribution_status_id', 1)
           ->addValue('contribution_recur_id', $recurId)
+          ->addValue('payment_instrument_id', $paymentInstrumentId)
           ->execute();
         return;
       }
@@ -756,10 +773,11 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       ->addValue('contact_id', $contactId)
       ->addValue('financial_type_id', $financialTypeId)
       ->addValue('total_amount', $amount)
-      ->addValue('net_amount', $amount)
       ->addValue('currency', $currency)
+      ->addValue('receive_date', $receiveDate)
       ->addValue('contribution_recur_id', $recurId)
       ->addValue('contribution_status_id', 1)
+      ->addValue('payment_instrument_id', $paymentInstrumentId)
       ->addValue('invoice_id', $invoiceId)
       ->addValue('is_test', $recur['is_test'])
       ->addValue('source', 'Square Recurring Payment')
@@ -2258,6 +2276,30 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
         return 7; // Refunded
       default:
         return NULL;
+    }
+  }
+
+  /**
+   * Map a Square source_type to a CiviCRM payment_instrument_id.
+   *
+   * Square source_type values: CARD, BANK_ACCOUNT, WALLET, CASH, EXTERNAL,
+   * BUY_NOW_PAY_LATER, SQUARE_ACCOUNT.
+   *
+   * CiviCRM defaults: 1=Credit Card, 2=Debit Card, 3=Cash, 4=Check, 5=EFT.
+   */
+  protected function mapPaymentInstrument(?string $sourceType): int {
+    switch (strtoupper((string) $sourceType)) {
+      case 'CARD':
+      case 'WALLET':         // Apple Pay / Google Pay / Cash App Pay tokenize as cards
+      case 'BUY_NOW_PAY_LATER':
+      case 'SQUARE_ACCOUNT':
+        return 1; // Credit Card
+      case 'BANK_ACCOUNT':
+        return 5; // EFT
+      case 'CASH':
+        return 3; // Cash
+      default:
+        return 1; // Credit Card (Square's most common instrument)
     }
   }
 
