@@ -305,7 +305,9 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
     // Determine amount/currency.
     $money = $payment['amount_money'] ?? NULL;
+    $feeMoney = $payment['processing_fee'][0]['amount_money']['amount'] ?? NULL;
     $amount = $money && isset($money['amount']) ? ($money['amount'] / 100) : NULL;
+    $feeAmount = $feeMoney !== NULL ? ($feeMoney / 100) : NULL;
     $currency = $money['currency'] ?? 'USD';
 
     // 1. Try to find existing contribution.
@@ -317,12 +319,16 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       ->first();
 
     if ($existing) {
-      \Civi\Api4\Contribution::update(FALSE)
+      $update = \Civi\Api4\Contribution::update(FALSE)
         ->addWhere('id', '=', $existing['id'])
         ->addValue('total_amount', $amount)
         ->addValue('currency', $currency)
-        ->addValue('contribution_status_id', $this->mapPaymentStatus($status))
-        ->execute();
+        ->addValue('contribution_status_id', $this->mapPaymentStatus($status));
+      if ($feeAmount !== NULL) {
+        $update->addValue('fee_amount', $feeAmount);
+      }
+      $update->execute();
+      Civi::log()->debug('Square syncPaymentFromSquare(): Updated existing contribution for payment ' . $paymentId);
       return;
     }
 
@@ -355,15 +361,18 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     // Default financial type is Donation (ID=1) unless better mapping is added later.
     $financialTypeId = 1;
 
-    \Civi\Api4\Contribution::create(FALSE)
+    $create = \Civi\Api4\Contribution::create(FALSE)
       ->addValue('contact_id', $contactId)
       ->addValue('financial_type_id', $financialTypeId)
       ->addValue('total_amount', $amount)
       ->addValue('currency', $currency)
       ->addValue('contribution_status_id', $this->mapPaymentStatus($status))
       ->addValue('trxn_id', $paymentId)
-      ->addValue('source', 'Square Payment (Webhook)')
-      ->execute();
+      ->addValue('source', 'Square Payment (Webhook)');
+    if ($feeAmount !== NULL) {
+      $create->addValue('fee_amount', $feeAmount);
+    }
+    $create->execute();
   }
 
   /**
@@ -712,15 +721,29 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
     // Check for duplicate contribution by invoice ID
     $existing = \Civi\Api4\Contribution::get(FALSE)
+      ->addSelect('id', 'contribution_status_id', 'contribution_recur_id')
       ->addWhere('invoice_id', '=', $invoiceId)
       ->addWhere('is_test', 'IN', [TRUE, FALSE])
-      ->addSelect('id')
       ->execute()
       ->first();
 
+    // check record exist and status completed and recurring is linked
     if (!empty($existing)) {
-      Civi::log()->debug("Square webhook: Invoice {$invoiceId} already mapped to contribution {$existing['id']}.");
-      return;
+      if ($existing['contribution_status_id'] == 1 && !empty($existing['contribution_recur_id'])) {
+        Civi::log()->debug("Square webhook: Invoice {$invoiceId} already processed as contribution {$existing['id']}.");
+        return;
+      }
+      else {
+        Civi::log()->debug("Square webhook: Updating existing contribution {$existing['id']} for invoice {$invoiceId} (subscription {$subscriptionId}).");
+        \Civi\Api4\Contribution::update(FALSE)
+          ->addWhere('id', '=', $existing['id'])
+          ->addValue('total_amount', $amount)
+          ->addValue('currency', $currency)
+          ->addValue('contribution_status_id', 1)
+          ->addValue('contribution_recur_id', $recurId)
+          ->execute();
+        return;
+      }
     }
 
     // Determine financial type ID

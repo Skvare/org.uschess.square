@@ -394,7 +394,7 @@ class CRM_Core_Payment_SquareIPN {
       ->execute()
       ->first();
 
-    if ($contribution) {
+    if (!empty($contribution)) {
       \Civi\Api4\Contribution::update(FALSE)
         ->addWhere('id', '=', $contribution['id'])
         ->addValue('contribution_status_id', 4) // Failed
