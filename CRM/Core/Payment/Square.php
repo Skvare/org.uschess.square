@@ -573,6 +573,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     // 5. Update contribution_status_id if needed
     if ($mappedStatus !== NULL && $mappedStatus !== (int) $recur['contribution_status_id']) {
       $updates['contribution_status_id'] = $mappedStatus;
+      Civi::log()->debug("Square sync: Status change for subscription {$squareSubscriptionId} mapped to contribution_recur {$recurId} status {$mappedStatus}");
     }
 
     // 6. Apply updates
@@ -763,6 +764,12 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
           ->addValue('contribution_recur_id', $recurId)
           ->addValue('payment_instrument_id', $paymentInstrumentId)
           ->execute();
+        try {
+          CRM_Contribute_BAO_ContributionRecur::updateOnNewPayment($recurId, 'Completed');
+        }
+        catch (Exception $e) {
+          Civi::log()->error("Square webhook: Failed to update contribution recur {$recurId} after processing invoice {$invoiceId}: " . $e->getMessage());
+        }
         return;
       }
     }
@@ -787,6 +794,12 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       ->addValue('source', 'Square Recurring Payment')
       ->execute();
 
+    try {
+      CRM_Contribute_BAO_ContributionRecur::updateOnNewPayment($recurId, 'Completed');
+    }
+    catch (Exception $e) {
+      Civi::log()->error("Square webhook: Failed to update contribution recur {$recurId} after processing invoice {$invoiceId}: " . $e->getMessage());
+    }
     Civi::log()->debug("Square webhook: Created contribution for invoice {$invoiceId} (subscription {$subscriptionId}).");
   }
 
