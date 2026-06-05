@@ -198,22 +198,3 @@ function _square_civix_fixNavigationMenuItems(&$nodes, &$maxNavID, $parentID) {
     }
   }
 }
-
-/**
- * Implements hook_civicrm_managed().
- *
- * @link https://docs.civicrm.org/dev/en/latest/hooks/hook_civicrm_managed
- */
-function _square_civix_civicrm_managed(&$entities) {
-  if (!file_exists(__DIR__ . '/managed')) {
-    return;
-  }
-  foreach (glob(__DIR__ . '/managed/*.mgd.php') as $file) {
-    $moreEntities = require $file;
-    if (!empty($moreEntities)) {
-      foreach ($moreEntities as $entity) {
-        $entities[] = $entity;
-      }
-    }
-  }
-}

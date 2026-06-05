@@ -165,22 +165,6 @@ function square_civicrm_enable(): void {
 }
 
 /**
- * Implements hook_civicrm_post().
- * Used for storing Square tokens, subscription mapping, etc.
- */
-function square_civicrm_post($op, $objectName, $objectId, &$objectRef): void {
-  // Placeholder: Token storage, card mapping, recur mapping.
-}
-
-/**
- * Implements hook_civicrm_pageRun().
- * Used for injecting JS into contribution pages (if needed).
- */
-function square_civicrm_pageRun(&$page): void {
-  // Placeholder: Optional page-level JS injection.
-}
-
-/**
  * Implements hook_civicrm_buildForm().
  * Inject Square Web Payments SDK + JS + card container into contribution forms.
  */
