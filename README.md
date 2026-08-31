@@ -3,9 +3,9 @@
 Square payment processor extension for CiviCRM.
 
 - **Extension key:** `org.uschess.square`
-- **Version:** 1.0.0 (alpha)
-- **CiviCRM compatibility:** 6.8+
-- **License:** AGPL-3.0
+- **Version:** 1.1.0 (beta)
+- **CiviCRM compatibility:** 6.16+
+- **License:** AGPL-3.0-or-later
 - **Square API version:** 2025-01-15
 
 ---
@@ -17,7 +17,7 @@ Square payment processor extension for CiviCRM.
 - Refunds via Square Refunds API (`/v2/refunds`)
 - Subscription cancellation and amount updates synced to Square
 - Square Web Payments SDK for browser-side card tokenization — card details never pass through CiviCRM
-- Card-on-file support (card tokens stored per contact)
+- Card-on-file support through CiviCRM PaymentToken
 - Square customer creation and deduplication (by email and `reference_id`)
 - Webhook event handling with deduplication and delivery logging
 - Supports sandbox (test) and production environments
@@ -58,12 +58,10 @@ Recurring payments use the Square Catalog API to create subscription plans and p
 
 ## Webhook Events
 
-Configure your Square webhook endpoint in the Square Developer Dashboard. Two URLs are available:
-
-- **Standard IPN URL (preferred):** `https://your-site.org/civicrm/payment/ipn/{processor_id}`
-- **Legacy URL:** `https://your-site.org/civicrm/square/webhook`
-
-Both URLs validate the `X-Square-Signature` header (HMAC-SHA256 using the Webhook Signature Key) before processing.
+Configure the Square webhook endpoint as
+`https://your-site.org/civicrm/payment/ipn/{processor_id}`. It validates the
+`X-Square-Hmacsha256-Signature` header before the event is queued. The queue
+worker processes events asynchronously and retries failures.
 
 ### Handled events
 
@@ -73,12 +71,14 @@ Both URLs validate the `X-Square-Signature` header (HMAC-SHA256 using the Webhoo
 | `subscription.updated` | Syncs subscription status/amount to `ContributionRecur` |
 | `subscription.canceled` | Marks `ContributionRecur` as Cancelled |
 | `invoice.created` | Creates a Pending contribution for the upcoming invoice |
-| `invoice.payment_made` | Creates a Completed contribution for the paid invoice |
-| `invoice.payment_failed` | Marks contribution as Failed |
-| `payment.updated` | Syncs payment status to existing contribution |
-| `refund.created` | Marks contribution as Refunded |
+| `invoice.payment_made` | Reconciles the paid invoice |
+| `invoice.payment_failed` | Reconciles the failed invoice |
+| `payment.updated` | Reconciles an existing contribution |
+| `refund.created` | Reconciles a refund |
 
-Webhook deduplication is performed via the `civicrm_square_webhook_event` database table. All delivery attempts are logged to `civicrm_square_webhook_delivery`.
+Webhook deduplication uses CiviCRM's `civicrm_paymentprocessor_webhook` queue
+and Square's globally unique event ID. Do not log webhook signatures, access
+tokens, card nonces, or unredacted Square responses.
 
 ---
 
@@ -93,10 +93,6 @@ On install, a `square_data` custom group is created for the **Contact** entity w
 
 ---
 
-## Contact Tab
-
-A **Square Tokens** tab is added to the Contact Summary page (route: `civicrm/square/tokens`). It displays the contact's Square customer ID, stored card ID, and linked recurring contribution records.
-
 ---
 
 ## JavaScript Integration
@@ -108,7 +104,7 @@ A **Square Tokens** tab is added to the Contact Summary page (route: `civicrm/sq
 - Backend contribution/event forms
 
 Key globals:
-- `CRM.squarePayment` — shared payment utility object (form detection, validation, submit handling)
+- `CRM.squarePayment` — Square's namespaced integration state
 - `CRM.vars.orgUschessSquare` — processor settings (Application ID, Location ID, sandbox flag)
 - `window.civicrmSquareHandleReload` — reinitializes the card element when the billing block is replaced via AJAX
 
@@ -116,37 +112,21 @@ The card element mounts into `#square-card-container`. Tokenization happens on f
 
 ---
 
-## AJAX Token Endpoint
-
-`civicrm/square/token` (POST) exchanges a Web Payments SDK nonce for a persistent Square card-on-file ID. Parameters:
-
-| Parameter | Description |
-|---|---|
-| `token` | Square nonce from the Web Payments SDK |
-| `processor_id` | CiviCRM payment processor ID |
-| `contact_id` | CiviCRM contact ID |
-
-Returns `{"success": true, "civi_token": "<card_id>"}` or `{"success": false, "error": "..."}`.
-
 ---
 
 ## CiviCRM Hooks
 
 | Hook | Purpose |
 |---|---|
-| `hook_civicrm_buildForm` | Injects hidden `square_payment_token` field on native contribution and event registration forms |
-| `hook_civicrm_post` (ContributionRecur) | Cancels the Square subscription when a recurring contribution is set to Cancelled; updates the subscription amount when the amount changes |
 | `hook_civicrm_enable` | Enforces `billing_mode = 1` on all Square payment processor instances |
-| `hook_civicrm_install` | Creates `square_data` custom fields and webhook tracking tables |
-| `hook_civicrm_tabs` | Adds the Square Tokens tab to the Contact Summary |
+| `hook_civicrm_install` | Installs managed extension configuration |
 
 ---
 
 ## Database Tables (created on install)
 
-**`civicrm_square_webhook_event`** — deduplication table; prevents the same Square event from being processed twice.
-
-**`civicrm_square_webhook_delivery`** — audit log of every webhook received, with event type, status message, and HTTP response code.
+**`civicrm_paymentprocessor_webhook`** — CiviCRM's webhook queue; it retains
+deduplication, status and retry information.
 
 ---
 
@@ -157,17 +137,12 @@ CRM/
   Core/Payment/
     Square.php          Payment processor class (payments, subscriptions, refunds, webhooks)
     SquareIPN.php       Webhook event router and processor
-  UschessSquare/
-    Ajax/SquareToken.php  AJAX endpoint: nonce → card-on-file ID
-    Page/Tokens.php       Contact tab page controller
-    Webhook.php           Legacy webhook handler (delegates to Square.php)
 js/
   square.js             Browser-side Square Web Payments SDK integration
 managed/
   PaymentProcessorType.mgd.php  Registers the Square payment processor type
 templates/
   CRM/Core/Payment/Square/Card.tpl  Card container HTML injected into billing block
-xml/Menu/square.xml     Route definitions
-hooks.php               CiviCRM hook implementations
+xml/Menu/square.xml     Settings route definition
 square.php              Extension bootstrap and additional hooks
 ```

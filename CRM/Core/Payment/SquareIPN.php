@@ -16,11 +16,8 @@ use Civi\Api4\PaymentprocessorWebhook;
  *
  * Webhook lifecycle:
  *   1. onReceiveWebhook() validates the event type, deduplicates via
- *      civicrm_paymentprocessor_webhook, records the event, then calls
- *      processQueuedWebhookEvent() immediately.
- *   2. processQueuedWebhookEvent() can also be called by the CiviCRM
- *      "Process Pending Webhooks" scheduled job for any records left
- *      with processed_date IS NULL.
+ *      civicrm_paymentprocessor_webhook and returns. CiviCRM's "Process
+ *      Pending Webhooks" scheduled job invokes the processor later.
  */
 class CRM_Core_Payment_SquareIPN {
 
@@ -95,7 +92,8 @@ class CRM_Core_Payment_SquareIPN {
    * Main entry point — called from Square::handlePaymentNotification().
    *
    * Records the webhook in civicrm_paymentprocessor_webhook for deduplication
-   * and audit trail, then processes it immediately.
+   * and audit trail. Webhook delivery must be quick: processing is deferred to
+   * CiviCRM's queue worker.
    *
    * @param array $payload Decoded JSON webhook payload.
    * @return bool TRUE on success.
@@ -119,18 +117,21 @@ class CRM_Core_Payment_SquareIPN {
     $identifier = $this->getWebhookIdentifier();
     $processorId = $this->_paymentProcessor->getID();
 
-    // Deduplication: skip if we already have an unprocessed record for this event_id.
+    if (!$eventId) {
+      Civi::log()->error('Square IPN: webhook event has no event_id.');
+      return FALSE;
+    }
+
+    // Deduplicate across every queue state. A previously failed event remains
+    // retryable; accepting a replay must not create a second queue record.
     $existingWebhooks = PaymentprocessorWebhook::get(FALSE)
       ->addWhere('payment_processor_id', '=', $processorId)
-      ->addWhere('identifier', '=', $identifier)
-      ->addWhere('processed_date', 'IS NULL')
+      ->addWhere('event_id', '=', (string) $eventId)
       ->execute();
 
     foreach ($existingWebhooks as $existing) {
-      if ($existing['event_id'] === (string) $eventId) {
-        CRM_Core_Payment_SquareDebugLogger::log("Square IPN: duplicate event '{$eventId}' already queued, skipping.");
-        return TRUE;
-      }
+      CRM_Core_Payment_SquareDebugLogger::log("Square IPN: duplicate event '{$eventId}' already queued, skipping.");
+      return TRUE;
     }
 
     $newWebhookEvent = PaymentprocessorWebhook::create(FALSE)
@@ -151,7 +152,7 @@ class CRM_Core_Payment_SquareIPN {
    * Called inline from onReceiveWebhook() and may also be called by the
    * CiviCRM "Process Pending Webhooks" scheduled job.
    *
-   * @param array $webhookEvent Row from civicrm_paymentprocessor_webhook.
+   * @param array $webhookEvent
    * @return bool TRUE on success.
    */
   public function processQueuedWebhookEvent(array $webhookEvent): bool {
@@ -181,12 +182,14 @@ class CRM_Core_Payment_SquareIPN {
       Civi::log()->error("Square IPN: processQueuedWebhookEvent failed. EventID: {$this->event_id}: " . $e->getMessage());
     }
 
-    PaymentprocessorWebhook::update(FALSE)
+    $update = PaymentprocessorWebhook::update(FALSE)
       ->addWhere('id', '=', $webhookEvent['id'])
       ->addValue('status', $ok ? 'success' : 'error')
-      ->addValue('message', preg_replace('/^(.{250}).*/su', '$1 ...', $message))
-      ->addValue('processed_date', 'now')
-      ->execute();
+      ->addValue('message', preg_replace('/^(.{250}).*/su', '$1 ...', $message));
+    if ($ok) {
+      $update->addValue('processed_date', 'now');
+    }
+    $update->execute();
 
     return $ok;
   }

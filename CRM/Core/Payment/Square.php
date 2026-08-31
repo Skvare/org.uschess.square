@@ -22,6 +22,9 @@ require_once E::path() . '/vendor/autoload.php';
  */
 class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
+  /** @var array Payment-processor instance configuration. */
+  protected $_paymentProcessor = [];
+
   /**
    * Square-supported cadence definitions.
    */
@@ -107,7 +110,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    *
    * @param \CRM_Core_Form $form
    */
-  public function buildForm(&$form) {
+  public function buildForm(&$form): bool {
     $isSandbox = FALSE;
     if ($this->_paymentProcessor['is_test']) {
       $isSandbox = TRUE;
@@ -157,6 +160,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
     // Enable JS validation so submission only happens after fields are valid.
     $form->assign('isJsValidate', TRUE);
+    return TRUE;
   }
 
   /**
@@ -227,6 +231,33 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
+   * Build an idempotency key that is stable for retries of the same CiviCRM
+   * operation, but distinct between processors and environments.
+   */
+  protected function idempotencyKey(string $operation, string $reference): string {
+    $processorId = (string) ($this->_paymentProcessor['id'] ?? '0');
+    $environment = $this->isTestMode() ? 'test' : 'live';
+    return substr('civi-' . $operation . '-' . hash('sha256', implode(':', [
+      $processorId,
+      $environment,
+      $reference,
+    ])), 0, 45);
+  }
+
+  /** Resolve a contribution status without relying on installation-specific IDs. */
+  protected function contributionStatusId(string $name): int {
+    static $statuses = NULL;
+    if ($statuses === NULL) {
+      $statuses = \CRM_Contribute_PseudoConstant::contributionStatus();
+    }
+    $id = array_search($name, $statuses, TRUE);
+    if ($id === FALSE) {
+      throw new \CRM_Core_Exception("CiviCRM contribution status '{$name}' is unavailable.");
+    }
+    return (int) $id;
+  }
+
+  /**
    * Validate Square webhook signatures (shared logic).
    *
    * @param string $raw
@@ -266,26 +297,18 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    * @return string|null
    */
   public function checkConfig() {
-    $error = [];
-
-    if (!empty($error)) {
-      return implode('<p>', $error);
+    $missing = [];
+    foreach ([
+      'user_name' => 'Application ID',
+      'password' => 'Access Token',
+      'signature' => 'Location ID',
+      'subject' => 'Webhook Signature Key',
+    ] as $field => $label) {
+      if (trim((string) ($this->_paymentProcessor[$field] ?? '')) === '') {
+        $missing[] = $label;
+      }
     }
-    else {
-      return NULL;
-    }
-    /*
-    try {
-      $client = $this->buildSquareClient();
-      $resp = $client->customers->list(new ListCustomersRequest([]));
-      return NULL;
-    }
-    catch (\Exception $e) {
-      $msg = "Square checkConfig failure (" . ($this->isTestMode() ? 'SANDBOX' : 'PRODUCTION') . "): " . $e->getMessage();
-     // CRM_Core_Payment_SquareDebugLogger::log($msg);
-      return $msg;
-    }
-    */
+    return $missing ? ts('Square configuration is missing: %1.', [1 => implode(', ', $missing)]) : NULL;
   }
 
   /**
@@ -970,15 +993,19 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
     // 2. Determine amount and currency.
     $amount = $params['amount'] ?? $params['total_amount'] ?? NULL;
-    if (!$amount) {
+    if ($amount === NULL || $amount === '') {
       throw new \CRM_Core_Exception('Missing contribution amount.');
+    }
+
+    if ((float) $amount === 0.0) {
+      return $params;
     }
 
     $amountCents = (int) round(((float) $amount) * 100);
     $currency = $params['currency'] ?? $params['currencyID'] ?? 'USD';
 
     // 3. Idempotency key.
-    $idempotencyKey = 'civi_onetime_' . md5(json_encode($params) . microtime(TRUE));
+    $idempotencyKey = $this->idempotencyKey('payment', (string) ($params['invoiceID'] ?? $params['invoice_id'] ?? $params['contributionID'] ?? $params['contribution_id'] ?? 'unknown'));
 
     // 4. Build payload for /v2/payments.
     $body = [
@@ -1016,8 +1043,8 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
     // 6. Set required CiviCRM transaction fields.
     $params['trxn_id'] = $trxnId;
-    $params['payment_status_id'] = 1;        // Completed
-    $params['contribution_status_id'] = 1;   // Completed
+    $params['payment_status_id'] = $this->contributionStatusId('Completed');
+    $params['contribution_status_id'] = $this->contributionStatusId('Completed');
 
     return $params;
   }
@@ -1058,7 +1085,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     }
     // Determine amount and currency.
     $amount = $params['amount'] ?? $params['total_amount'] ?? NULL;
-    if (!$amount) {
+    if ($amount === NULL || $amount === '') {
       throw new \CRM_Core_Exception('Missing contribution amount.');
     }
     $params['square_payment_token'] = $token;
@@ -1099,8 +1126,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     $startDate = (new DateTime('tomorrow'))->format('Y-m-d');
 
     // 7. Generate idempotency key tied to the recurring record so re-posts don't duplicate.
-    $idempotencyKey = "rc_{$recurId}_" . md5($customerId . $cardId .
-        microtime(TRUE));
+    $idempotencyKey = $this->idempotencyKey('subscription', (string) $recurId);
     $source = [
       'contact_id' => (string) ($params['contactID'] ?? $params['contact_id'] ?? ''),
       'recur_id' => (string) $recurId,
@@ -1245,7 +1271,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     $currency = $params['currencyID'] ?? $params['currency'] ?? 'USD';
 
     $body = [
-      'idempotency_key' => CRM_Utils_Random::generate(16),
+      'idempotency_key' => $this->idempotencyKey('refund', (string) $trxnId . ':' . $amountInCents),
       'payment_id' => $trxnId,
       'amount_money' => [
         'amount' => $amountInCents,
@@ -1268,10 +1294,10 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       throw new CRM_Core_Exception($msg);
     }
 
-    // Populate some common fields back into $params.
-    $params['refund_trxn_id'] = $refund['id'];
-
-    return $params;
+    return [
+      'refund_status' => $status,
+      'refund_trxn_id' => $refund['id'],
+    ];
   }
 
   /**
@@ -1289,7 +1315,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    *
    * @throws \CRM_Core_Exception
    */
-  protected function squareRequest($method, $endpoint, array $body = NULL) {
+  protected function squareRequest($method, $endpoint, ?array $body = NULL) {
     $url = rtrim($this->getApiBaseUrl(), '/') . $endpoint;
 
     $ch = curl_init($url);
@@ -2578,6 +2604,12 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     }
   }
 
+  /** Process a webhook record queued by CiviCRM's webhook worker. */
+  public function processWebhookEvent(array $webhookEvent): bool {
+    $ipn = new CRM_Core_Payment_SquareIPN($this);
+    return $ipn->processQueuedWebhookEvent($webhookEvent);
+  }
+
   /**
    * Validate the Square webhook HMAC-SHA256 signature.
    *
@@ -2611,8 +2643,8 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     $expected = base64_encode(hash_hmac('sha256', $notifyUrl . $rawData, $key, TRUE));
 
     if (!hash_equals($expected, $provided)) {
-      Civi::log()->error("Square IPN: signature mismatch. url={$notifyUrl}");
-      Civi::log()->error("Square IPN: signature validation failed. Expected {$expected}, got {$provided}");
+      // Do not log signatures: they are credential-derived authentication data.
+      Civi::log()->error('Square IPN: signature validation failed.');
       return FALSE;
     }
 

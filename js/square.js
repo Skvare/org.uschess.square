@@ -170,11 +170,6 @@
         $(this).attr('data-name', name);
         $(this).attr('name', name.replace('[' + name.split('[').pop(), ''));
       });
-      if ($.validator && $.validator.methods) {
-        $.validator.methods.email = function(value, element) {
-          return this.optional(element) || /^[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(value);
-        };
-      }
     },
 
     /**
@@ -471,13 +466,12 @@
 
       var submitButtons = CRM.squarePayment.getBillingSubmit();
       for (var i = 0; i < submitButtons.length; ++i) {
-        submitButtons[i].addEventListener('click', submitButtonClick);
-        submitButtons[i].removeAttribute('onclick');
+        $(submitButtons[i]).off('click.square').on('click.square', submitButtonClick);
       }
 
       function submitButtonClick(clickEvent) {
         if (typeof CRM.vars === 'undefined' || typeof CRM.vars.orgUschessSquare === 'undefined') {
-          return false;
+          return CRM.squarePayment.doStandardFormSubmit();
         }
         CRM.squarePayment.form.dataset.submitdontprocess = 'false';
         return script.submit(clickEvent);
@@ -527,7 +521,7 @@
 
       if (typeof CRM.vars === 'undefined' || typeof CRM.vars.orgUschessSquare === 'undefined') {
         script.debugging('not a Square processor, submitting normally');
-        return true;
+        return CRM.squarePayment.doStandardFormSubmit();
       }
 
       var cfg = script.getConfig();
@@ -564,21 +558,21 @@
       // Non-payment submit (e.g. discount "Apply" button) → skip tokenization
       if (CRM.squarePayment.form.dataset.submitdontprocess === 'true') {
         script.debugging('non-payment submit, skipping tokenization');
-        return true;
+        return CRM.squarePayment.doStandardFormSubmit();
       }
 
       if (CRM.squarePayment.getIsDrupalWebform()) {
         // Billing block hidden → not a payment step
         if ($('#billing-payment-block').is(':hidden')) {
           script.debugging('billing block hidden on webform');
-          return true;
+          return CRM.squarePayment.doStandardFormSubmit();
         }
         var $procFields = $('[name="submitted[civicrm_1_contribution_1_contribution_payment_processor_id]"]');
         if ($procFields.length) {
           var checkedVal = $procFields.filter(':checked').val();
           if (checkedVal === '0' || parseInt(checkedVal) === 0) {
             script.debugging('no payment processor selected on webform');
-            return true;
+            return CRM.squarePayment.doStandardFormSubmit();
           }
         }
       }
@@ -601,7 +595,8 @@
         for (var j = 0; j < submitButtons.length; ++j) {
           submitButtons[j].removeAttribute('disabled');
         }
-        return true;
+        CRM.squarePayment.displayError(ts('Secure card entry is not ready. Please wait a moment and try again.'), true);
+        return false;
       }
 
       try {
@@ -648,8 +643,6 @@
   };
 
   // ── Bootstrap ───────────────────────────────────────────────────────────────
-
-  window.onbeforeunload = null;
 
   if (CRM.squarePayment.hasOwnProperty(script.name)) {
     // Already loaded — just re-run HandleReload in case the billing block was replaced

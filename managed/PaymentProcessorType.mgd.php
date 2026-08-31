@@ -13,7 +13,7 @@ return [
       'name'        => 'Square',
       'description' => 'Square payment processor for US Chess',
 
-      // This ties to CRM_Core_Payment_Square in CRM/Core/Payment/Square.php
+      // Public payment-processor class in CRM/Core/Payment/Square.php.
       'class_name'  => 'Payment_Square',
 
       // Admin form labels (live credentials)
@@ -44,10 +44,9 @@ return [
       // 1 = credit card
       'payment_type' => 1,
 
-      // Capabilities flags
-      'is_recur'        => 1,   // we support recurring
-      'supports_refund' => 1,   // we support refunds
-      'is_test'         => 1,   // we support test mode
+      // Capabilities are advertised by CRM_Core_Payment_Square.  These fields
+      // are not valid payment_processor_type managed properties in CiviCRM.
+      'is_recur'        => 1,
     ],
   ],
 ];
