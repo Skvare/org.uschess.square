@@ -15,4 +15,11 @@
     <title>Square Tokens</title>
     <is_public>false</is_public>
   </item>
+  <item>
+    <path>civicrm/admin/setting/square</path>
+    <page_callback>CRM_UschessSquare_Form_Settings</page_callback>
+    <access_arguments>administer CiviCRM</access_arguments>
+    <title>Square Settings</title>
+    <is_public>false</is_public>
+  </item>
 </menu>

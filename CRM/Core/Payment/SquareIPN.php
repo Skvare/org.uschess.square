@@ -107,9 +107,11 @@ class CRM_Core_Payment_SquareIPN {
     $this->event_id = $eventId;
     $this->event_type = $eventType;
 
+    CRM_Core_Payment_SquareDebugLogger::log("Square IPN: onReceiveWebhook() called. event_id={$eventId}, type={$eventType}, processor_id={$this->_paymentProcessor->getID()}");
+
     // Ignore event types we do not handle (return 200 so Square does not retry).
     if (!in_array($eventType, self::getSupportedEventTypes(), TRUE)) {
-      Civi::log()->debug("Square IPN: ignoring unsupported event type '{$eventType}'.");
+      CRM_Core_Payment_SquareDebugLogger::log("Square IPN: ignoring unsupported event type '{$eventType}'.");
       return TRUE;
     }
 
@@ -126,7 +128,7 @@ class CRM_Core_Payment_SquareIPN {
 
     foreach ($existingWebhooks as $existing) {
       if ($existing['event_id'] === (string) $eventId) {
-        Civi::log()->debug("Square IPN: duplicate event '{$eventId}' already queued, skipping.");
+        CRM_Core_Payment_SquareDebugLogger::log("Square IPN: duplicate event '{$eventId}' already queued, skipping.");
         return TRUE;
       }
     }
@@ -161,6 +163,8 @@ class CRM_Core_Payment_SquareIPN {
     $eventType = $webhookEvent['trigger'];
     $this->event_id = $webhookEvent['event_id'];
     $this->event_type = $eventType;
+
+    CRM_Core_Payment_SquareDebugLogger::log("Square IPN: processQueuedWebhookEvent() called. webhook_id={$webhookEvent['id']}, event_id={$this->event_id}, type={$eventType}");
 
     $this->setInputParameters($payload, $eventType);
 
@@ -240,26 +244,28 @@ class CRM_Core_Payment_SquareIPN {
   public function processWebhookEvent(array $payload, string $eventType): bool {
     $obj = $payload['data']['object'] ?? [];
 
+    CRM_Core_Payment_SquareDebugLogger::log("Square IPN: processWebhookEvent() dispatching event_id={$this->event_id}, type={$eventType}, subscription_id=" . ($this->subscription_id ?? 'null') . ", invoice_id=" . ($this->invoice_id ?? 'null') . ", payment_id=" . ($this->payment_id ?? 'null'));
+
     switch ($eventType) {
 
       case 'subscription.created':
         if (!empty($this->subscription_id)) {
           $this->_paymentProcessor->syncSubscriptionFromSquare($this->subscription_id);
-          Civi::log()->debug("Square IPN: subscription.created synced for {$this->subscription_id}");
+          CRM_Core_Payment_SquareDebugLogger::log("Square IPN: subscription.created synced for {$this->subscription_id}");
         }
         break;
 
       case 'subscription.updated':
         if (!empty($this->subscription_id)) {
           $this->_paymentProcessor->syncSubscriptionFromSquare($this->subscription_id);
-          Civi::log()->debug("Square IPN: subscription.updated synced for {$this->subscription_id}");
+          CRM_Core_Payment_SquareDebugLogger::log("Square IPN: subscription.updated synced for {$this->subscription_id}");
         }
         break;
 
       case 'subscription.canceled':
         if (!empty($this->subscription_id)) {
           $this->_paymentProcessor->syncSubscriptionCancellationFromSquare($this->subscription_id);
-          Civi::log()->debug("Square IPN: subscription.canceled synced for {$this->subscription_id}");
+          CRM_Core_Payment_SquareDebugLogger::log("Square IPN: subscription.canceled synced for {$this->subscription_id}");
         }
         break;
 
@@ -272,7 +278,7 @@ class CRM_Core_Payment_SquareIPN {
 
       case 'invoice.payment_made':
         $this->_paymentProcessor->handleInvoicePaymentCreated($payload);
-        Civi::log()->debug("Square IPN: invoice.payment_made processed for invoice {$this->invoice_id}");
+        CRM_Core_Payment_SquareDebugLogger::log("Square IPN: invoice.payment_made processed for invoice {$this->invoice_id}");
         break;
 
       case 'invoice.payment_failed':
@@ -286,7 +292,7 @@ class CRM_Core_Payment_SquareIPN {
         $payment = $obj['payment'] ?? [];
         if (!empty($payment)) {
           $this->_paymentProcessor->syncPaymentFromSquare($payment);
-          Civi::log()->debug("Square IPN: payment.updated synced for {$this->payment_id}");
+          CRM_Core_Payment_SquareDebugLogger::log("Square IPN: payment.updated synced for {$this->payment_id}");
         }
         break;
 
@@ -294,12 +300,12 @@ class CRM_Core_Payment_SquareIPN {
         $refund = $obj['refund'] ?? [];
         if (!empty($refund)) {
           $this->_paymentProcessor->syncRefundFromSquare($refund);
-          Civi::log()->debug("Square IPN: refund.created synced for payment {$this->payment_id}");
+          CRM_Core_Payment_SquareDebugLogger::log("Square IPN: refund.created synced for payment {$this->payment_id}");
         }
         break;
 
       default:
-        Civi::log()->debug("Square IPN: unhandled event type '{$eventType}'");
+        CRM_Core_Payment_SquareDebugLogger::log("Square IPN: unhandled event type '{$eventType}'");
         break;
     }
 
@@ -321,13 +327,13 @@ class CRM_Core_Payment_SquareIPN {
     $status = strtoupper($invoice['status'] ?? '');
 
     if (!$invoiceId || !$subscriptionId) {
-      Civi::log()->debug('Square IPN: invoice.created missing invoice ID or subscription_id.');
+      CRM_Core_Payment_SquareDebugLogger::log('Square IPN: invoice.created missing invoice ID or subscription_id.');
       return;
     }
 
     // Skip invoices that are already paid — invoice.payment_made handles those.
     if (in_array($status, ['PAID', 'PAYMENT_PENDING'], TRUE)) {
-      Civi::log()->debug("Square IPN: invoice.created skipped (status={$status}).");
+      CRM_Core_Payment_SquareDebugLogger::log("Square IPN: invoice.created skipped (status={$status}).");
       return;
     }
 
@@ -338,7 +344,7 @@ class CRM_Core_Payment_SquareIPN {
       ->first();
 
     if (!$recur) {
-      Civi::log()->debug("Square IPN: invoice.created — no recur found for subscription {$subscriptionId}.");
+      CRM_Core_Payment_SquareDebugLogger::log("Square IPN: invoice.created — no recur found for subscription {$subscriptionId}.");
       return;
     }
 
@@ -371,7 +377,7 @@ class CRM_Core_Payment_SquareIPN {
       ->addValue('source', 'Square Invoice (Webhook)')
       ->execute();
 
-    Civi::log()->debug("Square IPN: Created Pending contribution for invoice {$invoiceId}.");
+    CRM_Core_Payment_SquareDebugLogger::log("Square IPN: Created Pending contribution for invoice {$invoiceId}.");
   }
 
   /**
@@ -384,7 +390,7 @@ class CRM_Core_Payment_SquareIPN {
     $subscriptionId = $invoice['subscription_id'] ?? NULL;
 
     if (!$invoiceId) {
-      Civi::log()->debug('Square IPN: invoice.payment_failed missing invoice ID.');
+      CRM_Core_Payment_SquareDebugLogger::log('Square IPN: invoice.payment_failed missing invoice ID.');
       return;
     }
 
@@ -400,13 +406,13 @@ class CRM_Core_Payment_SquareIPN {
         ->addWhere('id', '=', $contribution['id'])
         ->addValue('contribution_status_id', 4) // Failed
         ->execute();
-      Civi::log()->debug("Square IPN: Marked contribution {$contribution['id']} as Failed for invoice {$invoiceId}.");
+      CRM_Core_Payment_SquareDebugLogger::log("Square IPN: Marked contribution {$contribution['id']} as Failed for invoice {$invoiceId}.");
       return;
     }
 
     // No existing contribution — create a Failed one from the recurring record.
     if (!$subscriptionId) {
-      Civi::log()->debug("Square IPN: invoice.payment_failed — no contribution and no subscription_id for invoice {$invoiceId}.");
+      CRM_Core_Payment_SquareDebugLogger::log("Square IPN: invoice.payment_failed — no contribution and no subscription_id for invoice {$invoiceId}.");
       return;
     }
 
@@ -418,7 +424,7 @@ class CRM_Core_Payment_SquareIPN {
       ->first();
 
     if (!$recur) {
-      Civi::log()->debug("Square IPN: invoice.payment_failed — no recur for subscription {$subscriptionId}.");
+      CRM_Core_Payment_SquareDebugLogger::log("Square IPN: invoice.payment_failed — no recur for subscription {$subscriptionId}.");
       return;
     }
 
@@ -437,7 +443,7 @@ class CRM_Core_Payment_SquareIPN {
       ->addValue('source', 'Square Invoice Failed (Webhook)')
       ->execute();
 
-    Civi::log()->debug("Square IPN: Created Failed contribution for invoice {$invoiceId}.");
+    CRM_Core_Payment_SquareDebugLogger::log("Square IPN: Created Failed contribution for invoice {$invoiceId}.");
   }
 
   /**

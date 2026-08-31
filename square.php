@@ -247,6 +247,23 @@ function square_civicrm_managed(&$entities): void {
 }
 
 /**
+ * Implements hook_civicrm_navigationMenu().
+ *
+ * Adds "Square Settings" under Administer > System Settings.
+ */
+function square_civicrm_navigationMenu(&$menu): void {
+  _square_civix_insert_navigation_menu($menu, 'Administer/System Settings', [
+    'label' => E::ts('Square Settings'),
+    'name' => 'square_settings',
+    'url' => 'civicrm/admin/setting/square?reset=1',
+    'permission' => 'administer CiviCRM',
+    'operator' => 'OR',
+    'separator' => 0,
+  ]);
+  _square_civix_navigationMenu($menu);
+}
+
+/**
  * Implements hook_civicrm_tabs().
  *
  * Adds the "Square Tokens" tab to the Contact Summary.
