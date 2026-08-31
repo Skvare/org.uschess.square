@@ -110,7 +110,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    *
    * @param \CRM_Core_Form $form
    */
-  public function buildForm(&$form): bool {
+  public function buildForm(&$form) {
     $isSandbox = FALSE;
     if ($this->_paymentProcessor['is_test']) {
       $isSandbox = TRUE;
@@ -160,7 +160,6 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
     // Enable JS validation so submission only happens after fields are valid.
     $form->assign('isJsValidate', TRUE);
-    return TRUE;
   }
 
   /**
