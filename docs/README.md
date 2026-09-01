@@ -4,6 +4,7 @@ Choose the guide that matches your work:
 
 | Guide | Audience | Purpose |
 |---|---|---|
+| [Overview](OVERVIEW.html) | Everyone | One-page visual summary — what it does, how it was built, how it's used. Open in a browser. |
 | [Installation](INSTALLATION.md) | Administrators | Requirements, installation, upgrades, and uninstallation. |
 | [Configuration](CONFIGURATION.md) | Administrators | Credentials, sandbox verification, and production go-live. |
 | [Webhooks](WEBHOOKS.md) | Administrators and support | Webhook setup, processing lifecycle, and troubleshooting. |

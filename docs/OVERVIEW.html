@@ -1,0 +1,598 @@
+<title>Square Payment Processor</title>
+<!--
+  DESIGN PLAN
+  Treatment: utilitarian docs page (technical overview), not editorial/landing.
+
+  Color (named hex):
+    --ink       #211f19  primary text, warm near-black
+    --paper     #f6f1e5  ground, warm parchment (chess board light square)
+    --line      #d9cfba  hairline borders / rules
+    --accent    #1e6f54  verdigris green — payments/reconciliation, distinct from Square's own brand green
+    --gold      #a2761f  sparing highlight (beta/license badge only)
+    Dark mode redefines all of the above as tokens under prefers-color-scheme
+    and [data-theme="dark"]; components read only from tokens, never literals.
+
+  Type:
+    Display  Fraunces (variable serif)     — h1/h2, restrained weight (440-650), gives the doc
+                                              some character without becoming a landing page
+    Body     IBM Plex Sans                 — running text, technical-but-warm humanist sans
+    Mono     IBM Plex Mono                 — code paths, field names, table data, diagram labels
+
+  Layout:
+    Two-column docs shell: sticky left TOC (collapses above content on narrow
+    viewports) + single content column, max ~780px measure. Sections read as a
+    ledger: hairline rules, mono kickers, tables styled like line items. One
+    hand-authored SVG diagram for the payment/webhook loop — the one place a
+    picture beats prose, since it's an actual two-direction mechanism (sync
+    charge out, async signed webhook back) rather than a static list.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,440;9..144,560;9..144,650&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --ink:#211f19;
+    --ink-soft:#4a4636;
+    --muted:#6f6a5b;
+    --paper:#f6f1e5;
+    --paper-dim:#ece4d0;
+    --surface:#fffdf8;
+    --line:#d9cfb4;
+    --accent:#1e6f54;
+    --accent-ink:#0f4d38;
+    --accent-soft:#dfe9de;
+    --gold:#a2761f;
+    --gold-soft:#efe2bd;
+    --shadow: 0 1px 0 rgba(33,31,25,0.06);
+    --radius: 3px;
+    --font-display:'Fraunces', ui-serif, Georgia, serif;
+    --font-body:'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+    --font-mono:'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#ece6d6;
+      --ink-soft:#c9c0a6;
+      --muted:#a39b86;
+      --paper:#18160f;
+      --paper-dim:#211e15;
+      --surface:#1e1b13;
+      --line:#3a3521;
+      --accent:#49b78e;
+      --accent-ink:#8fdcbe;
+      --accent-soft:#1c2e26;
+      --gold:#d6ac4c;
+      --gold-soft:#332911;
+      --shadow: 0 1px 0 rgba(0,0,0,0.4);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink:#ece6d6;
+    --ink-soft:#c9c0a6;
+    --muted:#a39b86;
+    --paper:#18160f;
+    --paper-dim:#211e15;
+    --surface:#1e1b13;
+    --line:#3a3521;
+    --accent:#49b78e;
+    --accent-ink:#8fdcbe;
+    --accent-soft:#1c2e26;
+    --gold:#d6ac4c;
+    --gold-soft:#332911;
+    --shadow: 0 1px 0 rgba(0,0,0,0.4);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:var(--font-body);
+    font-size:16px;
+    line-height:1.6;
+  }
+  h1,h2,h3{
+    font-family:var(--font-display);
+    color:var(--ink);
+    text-wrap:balance;
+    font-weight:650;
+    margin:0;
+  }
+  a{color:var(--accent-ink);}
+  code, .mono{font-family:var(--font-mono); font-size:0.86em;}
+
+  .shell{
+    display:grid;
+    grid-template-columns:240px minmax(0,780px);
+    gap:56px;
+    max-width:1080px;
+    margin:0 auto;
+    padding:52px 28px 96px;
+  }
+  @media (max-width:880px){
+    .shell{grid-template-columns:1fr; gap:0; padding:28px 18px 72px;}
+    .toc{display:none;}
+  }
+
+  .toc{position:sticky; top:32px; align-self:start;}
+  .toc-label{
+    font-family:var(--font-mono);
+    font-size:11px;
+    letter-spacing:0.12em;
+    text-transform:uppercase;
+    color:var(--muted);
+    margin-bottom:14px;
+    display:block;
+  }
+  .toc nav{display:flex; flex-direction:column; gap:9px;}
+  .toc a{
+    color:var(--ink-soft);
+    text-decoration:none;
+    font-size:13.5px;
+    border-left:2px solid transparent;
+    padding-left:10px;
+  }
+  .toc a:hover{color:var(--accent-ink); border-left-color:var(--accent);}
+
+  header.masthead{
+    padding-bottom:28px;
+    margin-bottom:44px;
+    border-bottom:1px solid var(--line);
+  }
+  .eyebrow{
+    font-family:var(--font-mono);
+    font-size:11.5px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--accent-ink);
+    margin:0 0 12px;
+  }
+  h1.title{font-size:clamp(32px,4.4vw,44px); line-height:1.08;}
+  .tagline{
+    font-size:17px;
+    color:var(--ink-soft);
+    max-width:56ch;
+    margin:14px 0 22px;
+  }
+  .badges{display:flex; flex-wrap:wrap; gap:8px;}
+  .badge{
+    font-family:var(--font-mono);
+    font-size:11.5px;
+    padding:5px 10px;
+    border-radius:999px;
+    border:1px solid var(--line);
+    color:var(--ink-soft);
+    background:var(--surface);
+  }
+  .badge.accent{border-color:var(--accent); color:var(--accent-ink); background:var(--accent-soft);}
+  .badge.gold{border-color:var(--gold); color:var(--gold); background:var(--gold-soft);}
+
+  section{margin-bottom:60px; scroll-margin-top:24px;}
+  .kicker{
+    font-family:var(--font-mono);
+    font-size:11.5px;
+    letter-spacing:0.12em;
+    text-transform:uppercase;
+    color:var(--muted);
+    margin:0 0 8px;
+  }
+  h2.section-title{font-size:26px; margin-bottom:16px;}
+  p{color:var(--ink-soft); max-width:66ch;}
+  p.lede{font-size:17px; color:var(--ink);}
+
+  .callout{
+    border-left:3px solid var(--accent);
+    background:var(--accent-soft);
+    padding:14px 18px;
+    border-radius:0 var(--radius) var(--radius) 0;
+    margin:20px 0;
+    font-size:14.5px;
+    color:var(--ink-soft);
+  }
+  .callout strong{color:var(--ink);}
+
+  figure{margin:26px 0 10px;}
+  figure svg{width:100%; height:auto; display:block; background:var(--surface); border:1px solid var(--line); border-radius:6px;}
+  figcaption{
+    font-size:13px;
+    color:var(--muted);
+    margin-top:10px;
+    max-width:62ch;
+  }
+
+  .grid-features{
+    display:grid;
+    grid-template-columns:repeat(2,1fr);
+    gap:14px;
+    margin-top:18px;
+  }
+  @media (max-width:560px){ .grid-features{grid-template-columns:1fr;} }
+  .feature{
+    border:1px solid var(--line);
+    background:var(--surface);
+    border-radius:var(--radius);
+    padding:16px 18px;
+    box-shadow:var(--shadow);
+  }
+  .feature h3{font-size:15px; font-weight:600; font-family:var(--font-body); margin-bottom:6px;}
+  .feature p{font-size:13.5px; margin:0;}
+
+  table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:14px;
+    margin-top:16px;
+    background:var(--surface);
+  }
+  .table-wrap{overflow-x:auto; border:1px solid var(--line); border-radius:6px;}
+  th,td{
+    text-align:left;
+    padding:10px 14px;
+    border-bottom:1px solid var(--line);
+    vertical-align:top;
+  }
+  th{
+    font-family:var(--font-mono);
+    font-size:11px;
+    letter-spacing:0.08em;
+    text-transform:uppercase;
+    color:var(--muted);
+    background:var(--paper-dim);
+  }
+  tr:last-child td{border-bottom:none;}
+  td .mono{color:var(--accent-ink);}
+
+  .checklist{list-style:none; margin:18px 0 0; padding:0; counter-reset:step;}
+  .checklist li{
+    counter-increment:step;
+    display:grid;
+    grid-template-columns:30px 1fr;
+    gap:12px;
+    padding:12px 0;
+    border-bottom:1px solid var(--line);
+    font-size:14.5px;
+    color:var(--ink-soft);
+  }
+  .checklist li:last-child{border-bottom:none;}
+  .checklist li::before{
+    content:counter(step);
+    font-family:var(--font-mono);
+    font-size:12px;
+    color:var(--accent-ink);
+    border:1px solid var(--accent);
+    border-radius:50%;
+    width:24px; height:24px;
+    display:flex; align-items:center; justify-content:center;
+  }
+
+  .filetree{
+    font-family:var(--font-mono);
+    font-size:13px;
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:6px;
+    padding:16px 18px;
+    overflow-x:auto;
+    color:var(--ink-soft);
+    line-height:1.7;
+    white-space:pre;
+  }
+  .filetree .path{color:var(--ink);}
+  .filetree .note{color:var(--muted);}
+
+  .cmd{
+    font-family:var(--font-mono);
+    font-size:13px;
+    background:var(--paper-dim);
+    border:1px solid var(--line);
+    border-radius:6px;
+    padding:14px 16px;
+    color:var(--ink);
+    overflow-x:auto;
+  }
+  .cmd .prompt{color:var(--muted); margin-right:6px;}
+
+  footer{
+    border-top:1px solid var(--line);
+    padding-top:24px;
+    margin-top:20px;
+    display:flex;
+    justify-content:space-between;
+    flex-wrap:wrap;
+    gap:12px;
+    font-size:13px;
+    color:var(--muted);
+  }
+  footer a{color:var(--muted); text-decoration:underline;}
+  :focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+</style>
+
+<div class="shell">
+  <aside class="toc">
+    <span class="toc-label">On this page</span>
+    <nav>
+      <a href="#overview">Overview</a>
+      <a href="#how-it-works">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#storage">Data &amp; storage</a>
+      <a href="#webhooks">Webhook events</a>
+      <a href="#configuration">Configuration</a>
+      <a href="#development">Development</a>
+      <a href="#deployment">Deployment</a>
+      <a href="#operations">Operations</a>
+    </nav>
+  </aside>
+
+  <main>
+    <header class="masthead">
+      <p class="eyebrow">CiviCRM extension &middot; org.uschess.square</p>
+      <h1 class="title">Square Payment Processor</h1>
+      <p class="tagline">Lets US Chess Federation's CiviCRM take one-time and recurring dues, entry fees, and donations through Square — card data tokenizes in the browser and never touches the CiviCRM server.</p>
+      <div class="badges">
+        <span class="badge accent">v1.2.0 &middot; beta</span>
+        <span class="badge">CiviCRM 6.16+</span>
+        <span class="badge">PHP 8.2+</span>
+        <span class="badge">Square API 2025-01-15</span>
+        <span class="badge gold">AGPL-3.0-or-later</span>
+      </div>
+    </header>
+
+    <section id="overview">
+      <p class="kicker">Overview</p>
+      <h2 class="section-title">What this extension does</h2>
+      <p class="lede">org.uschess.square registers Square as a CiviCRM payment processor type — the same role Stripe or PayPal extensions play — so contribution pages, event registration, and back-office forms can charge a Square-issued card without CiviCRM ever seeing the card number.</p>
+      <p>It depends on two core CiviCRM extensions, <code>mjwshared</code> and <code>civi_contribute</code>, and is built against CiviCRM 6.16 or later. Composer dependencies ship committed in <code>vendor/</code>, so installing it is a normal extension enable — no build step. It is maintained by US Chess Federation and developed by Skvare, distributed under AGPL-3.0-or-later.</p>
+      <div class="callout"><strong>Why it exists:</strong> US Chess needed dues, tournament entry, and donation payments to run through Square rather than the processors CiviCRM ships with out of the box, with the same card-on-file and recurring-billing experience members already expect from CiviCRM's native processors.</div>
+    </section>
+
+    <section id="how-it-works">
+      <p class="kicker">How it works</p>
+      <h2 class="section-title">Two loops: charge now, reconcile later</h2>
+      <p>A payment has a synchronous half — tokenize the card and ask Square to charge it — and an asynchronous half, where Square reports what actually happened via webhook. The extension is built around keeping those two halves correctly linked.</p>
+
+      <figure>
+        <svg viewBox="0 0 920 300" role="img" aria-label="Diagram: the browser tokenizes a card and sends it to the CiviCRM Square processor, which calls the Square API; Square later reports outcomes back to CiviCRM asynchronously through a signed webhook handled by SquareIPN.">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <g font-family="IBM Plex Mono, monospace" fill="currentColor">
+
+            <!-- forward row -->
+            <rect x="14" y="34" width="230" height="66" rx="4" fill="none" stroke="currentColor" opacity="0.85"/>
+            <text x="129" y="60" text-anchor="middle" font-size="12.5" font-weight="600">Browser</text>
+            <text x="129" y="78" text-anchor="middle" font-size="11" opacity="0.75">card form +</text>
+            <text x="129" y="92" text-anchor="middle" font-size="11" opacity="0.75">Square Web Payments SDK</text>
+
+            <line x1="244" y1="67" x2="336" y2="67" stroke="currentColor" marker-end="url(#arrow)"/>
+            <text x="290" y="56" text-anchor="middle" font-size="10.5" opacity="0.8">nonce</text>
+
+            <line x1="290" y1="14" x2="290" y2="290" stroke="currentColor" stroke-dasharray="2 5" opacity="0.5"/>
+            <text x="290" y="10" text-anchor="middle" font-size="10" opacity="0.7">card data stops here</text>
+
+            <rect x="346" y="34" width="240" height="66" rx="4" fill="none" stroke="currentColor" opacity="0.85"/>
+            <text x="466" y="58" text-anchor="middle" font-size="12.5" font-weight="600">CiviCRM Processor</text>
+            <text x="466" y="76" text-anchor="middle" font-size="10.5" opacity="0.75">CRM/Core/Payment/Square.php</text>
+            <text x="466" y="90" text-anchor="middle" font-size="10.5" opacity="0.75">payments &middot; refunds &middot; subscriptions</text>
+
+            <line x1="586" y1="67" x2="678" y2="67" stroke="currentColor" marker-end="url(#arrow)"/>
+            <text x="632" y="56" text-anchor="middle" font-size="10.5" opacity="0.8">charge / refund</text>
+
+            <rect x="678" y="34" width="228" height="66" rx="4" fill="currentColor" opacity="0.08" stroke="currentColor"/>
+            <text x="792" y="58" text-anchor="middle" font-size="12.5" font-weight="600">Square API</text>
+            <text x="792" y="76" text-anchor="middle" font-size="10.5" opacity="0.75">Payments &middot; Subscriptions</text>
+            <text x="792" y="90" text-anchor="middle" font-size="10.5" opacity="0.75">Refunds &middot; Catalog</text>
+
+            <!-- connector down -->
+            <line x1="792" y1="100" x2="792" y2="184" stroke="currentColor" marker-end="url(#arrow)"/>
+            <text x="806" y="145" font-size="10.5" opacity="0.8">async webhook, minutes later</text>
+
+            <!-- return row -->
+            <rect x="678" y="184" width="228" height="66" rx="4" fill="currentColor" opacity="0.08" stroke="currentColor"/>
+            <text x="792" y="208" text-anchor="middle" font-size="12.5" font-weight="600">Square API</text>
+            <text x="792" y="226" text-anchor="middle" font-size="10.5" opacity="0.75">event fired</text>
+            <text x="792" y="240" text-anchor="middle" font-size="10.5" opacity="0.75">e.g. invoice.payment_made</text>
+
+            <line x1="678" y1="217" x2="596" y2="217" stroke="currentColor" marker-end="url(#arrow)"/>
+            <text x="637" y="206" text-anchor="middle" font-size="10" opacity="0.8">HMAC-SHA256</text>
+
+            <rect x="346" y="184" width="240" height="66" rx="4" fill="none" stroke="currentColor" opacity="0.85"/>
+            <text x="466" y="204" text-anchor="middle" font-size="12.5" font-weight="600">SquareIPN.php</text>
+            <text x="466" y="222" text-anchor="middle" font-size="10.5" opacity="0.75">verify signature &middot; dedupe</text>
+            <text x="466" y="236" text-anchor="middle" font-size="10.5" opacity="0.75">queue &middot; process</text>
+
+            <line x1="336" y1="217" x2="254" y2="217" stroke="currentColor" marker-end="url(#arrow)"/>
+            <text x="295" y="206" text-anchor="middle" font-size="10" opacity="0.8">reconcile</text>
+
+            <rect x="14" y="184" width="230" height="66" rx="4" fill="none" stroke="currentColor" opacity="0.85"/>
+            <text x="129" y="204" text-anchor="middle" font-size="12.5" font-weight="600">CiviCRM records</text>
+            <text x="129" y="222" text-anchor="middle" font-size="10.5" opacity="0.75">Contribution &middot; ContributionRecur</text>
+            <text x="129" y="236" text-anchor="middle" font-size="10.5" opacity="0.75">PaymentToken</text>
+          </g>
+        </svg>
+        <figcaption>The initial charge (top row) runs synchronously on the request that submits the form. Everything Square reports afterward — a paid invoice, a failed renewal, a refund — arrives later as a separately verified, deduplicated webhook (bottom row) and is reconciled against the same CiviCRM records.</figcaption>
+      </figure>
+
+      <p>Recurring contributions add one more step before the top row: the processor creates (or reuses) a Square Catalog plan and plan variation for the billing cadence, then creates a Square Subscription linked to the card-on-file. The first charge happens immediately; every renewal after that is Square's clock, reported back through the same webhook loop.</p>
+    </section>
+
+    <section id="features">
+      <p class="kicker">Capabilities</p>
+      <h2 class="section-title">What it handles</h2>
+      <div class="grid-features">
+        <div class="feature"><h3>One-time payments</h3><p>Card charges through Square's Payments API for contributions, event fees, and donations.</p></div>
+        <div class="feature"><h3>Recurring contributions</h3><p>Square Subscriptions API drives renewals; eight cadences from daily to annual.</p></div>
+        <div class="feature"><h3>Refunds</h3><p>Full and partial refunds issued through Square's Refunds API from the CiviCRM contribution.</p></div>
+        <div class="feature"><h3>Subscription changes</h3><p>Cancellations and amount updates made in CiviCRM sync forward to the live Square subscription.</p></div>
+        <div class="feature"><h3>Card-on-file</h3><p>Cards save as standard CiviCRM PaymentToken records — one contact can hold several across processors.</p></div>
+        <div class="feature"><h3>Customer deduplication</h3><p>Square customers are matched and reused by email and reference ID instead of duplicating on every charge.</p></div>
+        <div class="feature"><h3>Webhook reconciliation</h3><p>Every Square event is signature-verified, deduplicated, queued, and logged before it touches a record.</p></div>
+        <div class="feature"><h3>Sandbox &amp; production</h3><p>Fully separate credentials and data per environment, switchable per processor instance.</p></div>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <p class="kicker">Architecture</p>
+      <h2 class="section-title">Components</h2>
+      <p>Six pieces, each with one job. The processor class talks to Square; the IPN class listens to it; the upgrader owns the one table the extension keeps for itself.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Component</th><th>Responsibility</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">CRM/Core/Payment/Square.php</td><td>Payment processor: browser assets, payments, refunds, subscriptions, notification entry point.</td></tr>
+            <tr><td class="mono">CRM/Core/Payment/SquareIPN.php</td><td>Webhook filtering, signature verification, deduplication, queue persistence, processing.</td></tr>
+            <tr><td class="mono">CRM/Core/Payment/SquareDebugLogger.php</td><td>Opt-in diagnostic logging, gated by a setting so it's off by default.</td></tr>
+            <tr><td class="mono">CRM/Square/Upgrader.php</td><td>Creates <code>square_customer_map</code>, migrates legacy data, drops the table on uninstall.</td></tr>
+            <tr><td class="mono">js/square.js</td><td>Mounts the Square card element and tokenizes on submit, across native, Webform, and backend forms.</td></tr>
+            <tr><td class="mono">managed/PaymentProcessorType.mgd.php</td><td>Registers "Square" as a selectable payment processor type.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p style="margin-top:28px;">Full file layout, for orientation:</p>
+      <div class="filetree">CRM/
+  Core/Payment/
+    <span class="path">Square.php</span>               <span class="note">payments, subscriptions, refunds, webhooks</span>
+    <span class="path">SquareIPN.php</span>             <span class="note">webhook router</span>
+    <span class="path">SquareDebugLogger.php</span>     <span class="note">opt-in verbose logging</span>
+  Square/
+    Form/<span class="path">Settings.php</span>         <span class="note">Square Settings admin screen</span>
+    <span class="path">Upgrader.php</span>               <span class="note">square_customer_map lifecycle</span>
+js/
+  <span class="path">square.js</span>                    <span class="note">browser-side SDK integration</span>
+managed/
+  <span class="path">PaymentProcessorType.mgd.php</span> <span class="note">registers processor type</span>
+settings/
+  <span class="path">Square.setting.php</span>           <span class="note">square_ipn_debug_logging</span>
+templates/CRM/
+  Core/Payment/Square/<span class="path">Card.tpl</span>
+  Square/Form/<span class="path">Settings.tpl</span>
+xml/Menu/<span class="path">square.xml</span>            <span class="note">civicrm/admin/setting/square</span>
+<span class="path">square.php</span>                      <span class="note">bootstrap + hooks</span></div>
+    </section>
+
+    <section id="storage">
+      <p class="kicker">Data &amp; storage</p>
+      <h2 class="section-title">Who owns what data</h2>
+      <p>The extension is deliberately thin on its own storage. It keeps exactly one table for itself — mapping a contact to a Square customer, per processor — and puts everything else into tables CiviCRM core already owns and understands.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Data</th><th>Table</th><th>Owner</th></tr></thead>
+          <tbody>
+            <tr><td>Square customer mapping</td><td class="mono">square_customer_map</td><td>This extension — created on install, dropped on uninstall</td></tr>
+            <tr><td>Card-on-file reference</td><td class="mono">civicrm_payment_token</td><td>CiviCRM core — never dropped</td></tr>
+            <tr><td>Recurring contribution</td><td class="mono">civicrm_contribution_recur</td><td>CiviCRM core</td></tr>
+            <tr><td>Webhook queue &amp; state</td><td class="mono">civicrm_paymentprocessor_webhook</td><td>CiviCRM core — never dropped</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="margin-top:20px;">Customer mappings key on <code>(contact_id, payment_processor_id)</code>, so sandbox, production, and multiple Square merchant accounts stay separate rather than colliding on one contact field. An earlier version stored the customer ID as a Contact custom field; the upgrader migrates that data automatically only when it can be attributed to exactly one configured Square processor, and logs the rest for manual review rather than guessing.</p>
+    </section>
+
+    <section id="webhooks">
+      <p class="kicker">Webhook events</p>
+      <h2 class="section-title">What Square tells CiviCRM, and when</h2>
+      <p>Square posts to <code>https://your-site.org/civicrm/payment/ipn/{processor_id}</code>. The <code>X-Square-Hmacsha256-Signature</code> header is validated before anything is queued; a failed record stays in the queue for the <strong>Process Pending Webhooks</strong> scheduled job to retry.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Event</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">subscription.created</td><td>Syncs subscription status to ContributionRecur</td></tr>
+            <tr><td class="mono">subscription.updated</td><td>Syncs subscription status/amount to ContributionRecur</td></tr>
+            <tr><td class="mono">subscription.canceled</td><td>Marks ContributionRecur as Cancelled</td></tr>
+            <tr><td class="mono">invoice.created</td><td>Creates a Pending contribution for the upcoming invoice</td></tr>
+            <tr><td class="mono">invoice.payment_made</td><td>Reconciles the paid invoice</td></tr>
+            <tr><td class="mono">invoice.payment_failed</td><td>Reconciles the failed invoice</td></tr>
+            <tr><td class="mono">payment.updated</td><td>Reconciles an existing contribution</td></tr>
+            <tr><td class="mono">refund.created</td><td>Reconciles a refund</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="configuration">
+      <p class="kicker">Configuration</p>
+      <h2 class="section-title">Setting up a processor</h2>
+      <p>Created at <strong>Administer → System Settings → Payment Processors</strong>, type Square. Sandbox and live fields are entered separately and never share values.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Field</th><th>Source</th></tr></thead>
+          <tbody>
+            <tr><td>Application ID</td><td>Developer Dashboard → Your Application → Credentials</td></tr>
+            <tr><td>Access Token</td><td>Live or sandbox token, same dashboard</td></tr>
+            <tr><td>Location ID</td><td>Locations, in the Square Dashboard</td></tr>
+            <tr><td>Webhook Signature Key</td><td>The webhook subscription created for that application</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="margin-top:20px;">Enabling the processor forces <code>billing_mode = 1</code> (on-site) automatically, for compatibility with Drupal Webform CiviCRM.</p>
+
+      <p style="margin-top:28px;">Recurring cadences supported end to end, via the Square Catalog API:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Cadence</th><th>Interval</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">DAILY</td><td>Every day</td></tr>
+            <tr><td class="mono">WEEKLY</td><td>Every week</td></tr>
+            <tr><td class="mono">EVERY_TWO_WEEKS</td><td>Every 2 weeks</td></tr>
+            <tr><td class="mono">MONTHLY</td><td>Every month</td></tr>
+            <tr><td class="mono">EVERY_TWO_MONTHS</td><td>Every 2 months</td></tr>
+            <tr><td class="mono">QUARTERLY</td><td>Every 3 months</td></tr>
+            <tr><td class="mono">EVERY_SIX_MONTHS</td><td>Every 6 months</td></tr>
+            <tr><td class="mono">ANNUAL</td><td>Every year</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="development">
+      <p class="kicker">How it was built</p>
+      <h2 class="section-title">Development workflow</h2>
+      <p>The extension is scaffolded on civix (<code>square.civix.php</code>) against CiviCRM's mixin system — <code>mgd-php</code> for the managed payment-processor-type entity, <code>setting-php</code> for the debug-logging setting, <code>scan-classes</code> for autoloading. It targets PHP 8.2+ and follows CiviCRM's own two-space, Drupal-derived style rather than a generic PSR preset, so it reads consistently with the rest of a CiviCRM codebase.</p>
+      <p>Two checks gate a change, run from the extension root:</p>
+      <div class="cmd"><span class="prompt">$</span>vendor/bin/phpcs --standard=phpcs.xml.dist CRM square.php settings managed tests<br><span class="prompt">$</span>vendor/bin/phpunit --configuration tests/phpunit/phpunit.xml.dist</div>
+      <p style="margin-top:18px;"><code>phpcs.xml.dist</code> is the authoritative lint config — it deliberately permits CiviCRM conventions a generic linter would flag: <code>CRM_*</code> class names, snake_case hook functions, the <code>ExtensionUtil as E</code> pattern, and underscore-prefixed properties inherited from core's payment base class. <code>vendor/</code> is committed rather than built, and is never linted or auto-formatted.</p>
+      <div class="callout"><strong>Handling secrets in development:</strong> access tokens, webhook signature keys, card nonces, and unredacted Square API responses are kept out of source, fixtures, logs, and tickets — including while debug logging is temporarily enabled to investigate a live issue.</div>
+    </section>
+
+    <section id="deployment">
+      <p class="kicker">Going live</p>
+      <h2 class="section-title">Sandbox first, always</h2>
+      <p>Square's HMAC signature covers the exact notification URL and raw request body, so the URL configured in Square and the one CiviCRM actually serves have to match byte-for-byte — no proxy rewrite, scheme change, or trailing-slash difference.</p>
+      <ol class="checklist">
+        <li>Enable <code>mjwshared</code> and <code>civi_contribute</code>, then enable this extension.</li>
+        <li>Create a Square payment processor in CiviCRM with sandbox Application ID, Access Token, Location ID, and Webhook Signature Key.</li>
+        <li>In the Square Developer Dashboard, create a webhook subscription for that same sandbox application pointed at <code>/civicrm/payment/ipn/{processor_id}</code>.</li>
+        <li>Subscribe to the eight events listed above — anything else is acknowledged but intentionally ignored.</li>
+        <li>Confirm CiviCRM's <strong>Process Pending Webhooks</strong> scheduled job is enabled, to retry failed deliveries.</li>
+        <li>Run a test one-time contribution, and a test recurring one if it's in scope. Check the contribution, payment token, recurring record, and webhook queue all landed correctly.</li>
+        <li>Only after sandbox checks out, repeat the setup with the production Square application and live credentials.</li>
+      </ol>
+    </section>
+
+    <section id="operations">
+      <p class="kicker">Operations</p>
+      <h2 class="section-title">When something doesn't reconcile</h2>
+      <p>Webhook delivery and processing state live in <code>civicrm_paymentprocessor_webhook</code>. Start with records where <code>status = error</code>, alongside the CiviCRM log.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Symptom</th><th>Check</th></tr></thead>
+          <tbody>
+            <tr><td>Webhook returns 401</td><td>Signature key and notification URL match exactly; the raw body wasn't trimmed or transformed en route.</td></tr>
+            <tr><td>Webhook returns 400</td><td>Square is posting valid JSON.</td></tr>
+            <tr><td>No change after a webhook</td><td>Event type is supported, processor ID in the URL is correct, queue record isn't stuck in error.</td></tr>
+            <tr><td>Repeated webhook delivery</td><td>A failed queue record with an unresolved error — Square keeps retrying until it succeeds.</td></tr>
+            <tr><td>Card field doesn't appear</td><td>Processor is Square, on-site collection is enabled, no CSP errors blocking the SDK script.</td></tr>
+            <tr><td>Sandbox data missing in live mode</td><td>Expected — sandbox and production are entirely separate customers, cards, and credentials.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      <span>org.uschess.square &middot; maintained by US Chess Federation &middot; AGPL-3.0-or-later</span>
+      <span><a href="https://github.com/Skvare/org.uschess.square">github.com/Skvare/org.uschess.square</a></span>
+    </footer>
+  </main>
+</div>
