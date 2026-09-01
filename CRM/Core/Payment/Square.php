@@ -1844,7 +1844,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     );
 
     $planId = $this->getOrCreateSubscriptionPlan($planName);
-    CRM_Core_Payment_SquareDebugLogger::log("Square plan ID for {$entity}: {$planId}"); .
+    CRM_Core_Payment_SquareDebugLogger::log("Square plan ID for {$entity}: {$planId}");
     return $this->getOrCreatePlanVariation(
       $planId, $amount,
       $currency, $intervalUnit,
