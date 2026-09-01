@@ -3,7 +3,7 @@
 Square payment processor extension for CiviCRM.
 
 - **Extension key:** `org.uschess.square`
-- **Version:** 1.1.0 (beta)
+- **Version:** 1.2.0 (beta)
 - **CiviCRM compatibility:** 6.16+
 - **License:** AGPL-3.0-or-later
 - **Square API version:** 2025-01-15
@@ -91,14 +91,33 @@ tokens, card nonces, or unredacted Square responses.
 
 ---
 
-## Custom Data
+## Card & Customer Storage
 
-On install, a `square_data` custom group is created for the **Contact** entity with these fields:
+Square identifiers are **not** stored as Contact custom fields. Both are
+scoped per payment processor, since live and sandbox (or multiple Square
+merchant accounts) are entirely separate environments with their own
+customer/card records:
 
-| Field | Description |
-|---|---|
-| `square_customer_id` | Square customer ID linked to this contact |
-| `square_card_id` | Square card-on-file ID for recurring payments |
+- **Cards** are stored as standard CiviCRM `PaymentToken` records
+  (`civicrm_payment_token`), one per card, linked from
+  `civicrm_contribution_recur.payment_token_id`. This lets a contact have
+  more than one card on file across different recurring contributions,
+  and lets other CiviCRM UI/tooling that understands `PaymentToken` work
+  with them normally.
+- **Square customer IDs** are stored in `square_customer_map`, an
+  extension-owned table keyed by `(contact_id, payment_processor_id)` —
+  see [Database Tables](#database-tables) below.
+
+Earlier versions of this extension stored both as a `square_data` custom
+field group on the Contact entity. `CRM_Square_Upgrader::upgrade_1000()`
+migrates that legacy data into `square_customer_map` automatically **only**
+when a contact's stored customer ID can be attributed to exactly one
+configured Square processor. If more than one Square processor is
+configured, the legacy field never recorded which one a given value
+belongs to, so migration is skipped for that data (never guessed — live is
+never assumed) and it's logged via `Civi::log()->warning()` for manual
+reconciliation. The `square_data` group itself is only removed once
+nothing ambiguous remains.
 
 ---
 
@@ -127,15 +146,22 @@ The card element mounts into `#square-card-container`. Tokenization happens on f
 
 | Hook | Purpose |
 |---|---|
+| `hook_civicrm_config` | Standard civix bootstrap |
+| `hook_civicrm_install` | Standard civix install (schema/table creation is handled separately by `CRM_Square_Upgrader`, not this hook) |
+| `hook_civicrm_uninstall` | Defensive cleanup of the legacy `square_data` custom field group, if it's still present |
 | `hook_civicrm_enable` | Enforces `billing_mode = 1` on all Square payment processor instances |
-| `hook_civicrm_install` | Installs managed extension configuration |
+| `hook_civicrm_managed` | Wires up `managed/PaymentProcessorType.mgd.php` (registers the Square payment processor type) |
+| `hook_civicrm_navigationMenu` | Adds "Square Settings" under Administer → System Settings |
 
 ---
 
-## Database Tables (created on install)
+## Database Tables
 
-**`civicrm_paymentprocessor_webhook`** — CiviCRM's webhook queue; it retains
-deduplication, status and retry information.
+| Table | Owner | Purpose |
+|---|---|---|
+| `square_customer_map` | This extension (`CRM_Square_Upgrader`) | Maps `(contact_id, payment_processor_id)` → Square customer ID. Created on install; dropped on uninstall. |
+| `civicrm_payment_token` | CiviCRM core | Stores Square card-on-file references (one row per card), linked from `civicrm_contribution_recur.payment_token_id`. Not owned by this extension — never dropped on uninstall. |
+| `civicrm_paymentprocessor_webhook` | CiviCRM core | Webhook queue; retains deduplication, status and retry information. Not owned by this extension. |
 
 ---
 
@@ -144,14 +170,21 @@ deduplication, status and retry information.
 ```
 CRM/
   Core/Payment/
-    Square.php          Payment processor class (payments, subscriptions, refunds, webhooks)
-    SquareIPN.php       Webhook event router and processor
+    Square.php               Payment processor class (payments, subscriptions, refunds, webhooks)
+    SquareIPN.php            Webhook event router and processor
+    SquareDebugLogger.php    Opt-in verbose debug logging, gated by the square_ipn_debug_logging setting
+  Square/
+    Form/Settings.php        Administer > System Settings > Square Settings (debug logging toggle)
+    Upgrader.php             Creates/backfills/drops the square_customer_map table (see Database Tables)
 js/
-  square.js             Browser-side Square Web Payments SDK integration
+  square.js                  Browser-side Square Web Payments SDK integration
 managed/
   PaymentProcessorType.mgd.php  Registers the Square payment processor type
+settings/
+  Square.setting.php         Declares the square_ipn_debug_logging setting
 templates/
   CRM/Core/Payment/Square/Card.tpl  Card container HTML injected into billing block
-xml/Menu/square.xml     Settings route definition
-square.php              Extension bootstrap and additional hooks
+  CRM/Square/Form/Settings.tpl      Settings form markup
+xml/Menu/square.xml          Route: civicrm/admin/setting/square -> CRM_Square_Form_Settings
+square.php                   Extension bootstrap and hooks (config/install/uninstall/enable/managed/navigationMenu)
 ```

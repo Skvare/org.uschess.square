@@ -2,6 +2,7 @@
   "name": "uschess/org.uschess.square",
   "description": "Square payment processor integration for US Chess",
   "type": "civicrm-extension",
+  "homepage": "https://github.com/Skvare/org.uschess.square",
   "extra": {
     "civicrm": {
       "type": "payment"
@@ -15,9 +16,12 @@
   "license": "AGPL-3.0-or-later",
   "config": {
     "platform": {
-      "php": "8.1.2"
+      "php": "8.2.0"
     },
-    "sort-packages": true
+    "sort-packages": true,
+    "allow-plugins": {
+      "dealerdirect/phpcodesniffer-composer-installer": true
+    }
   },
   "authors": [
     {
@@ -25,15 +29,22 @@
       "email": "emanuel.london@uschess.org"
     }
   ],
+  "support": {
+    "issues": "https://github.com/Skvare/org.uschess.square/issues",
+    "source": "https://github.com/Skvare/org.uschess.square"
+  },
   "autoload-dev": {
     "psr-4": {
       "CRM\\Tests\\": "tests/"
     }
   },
   "require": {
+    "php": ">=8.2",
     "square/square": "^43.2"
   },
   "require-dev": {
+    "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
+    "drupal/coder": "^8.3",
     "phpunit/phpunit": "^9.6"
   }
 }

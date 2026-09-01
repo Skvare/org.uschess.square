@@ -1,8 +1,7 @@
 <?php
 
-use CRM_Square_ExtensionUtil as E;
-
 /**
+ * @file
  * Settings metadata for the Square payment processor extension.
  */
 return [
@@ -15,8 +14,8 @@ return [
     'add' => '1.0.3',
     'is_domain' => 1,
     'is_contact' => 0,
-    'title' => E::ts('Square IPN Debug Logging'),
-    'description' => E::ts('When enabled, verbose Square webhook processing details (event dispatch, record lookups, created/updated records) are written to the CiviCRM debug log (ConfigAndLog). Leave disabled in normal operation.'),
+    'title' => \CRM_Square_ExtensionUtil::ts('Square IPN Debug Logging'),
+    'description' => \CRM_Square_ExtensionUtil::ts('When enabled, verbose Square webhook processing details (event dispatch, record lookups, created/updated records) are written to the CiviCRM debug log (ConfigAndLog). Leave disabled in normal operation.'),
     'help_text' => NULL,
     'settings_pages' => ['square' => ['weight' => 10]],
   ],

@@ -1,9 +1,11 @@
 <?php
 
+use Civi\Api4\Contribution;
+use Civi\Api4\ContributionRecur;
 use Civi\Api4\PaymentprocessorWebhook;
 
 /**
- * Class CRM_Core_Payment_SquareIPN
+ * Class CRM_Core_Payment_SquareIPN.
  *
  * Processes Square webhook events and syncs them into CiviCRM.
  *
@@ -27,37 +29,37 @@ class CRM_Core_Payment_SquareIPN {
   protected $_paymentProcessor;
 
   /**
-   * @var string|null Event ID of the webhook being processed.
+   * @var string|null Event ID of the webhook being processed
    */
   protected $event_id = NULL;
 
   /**
-   * @var string The event type currently being processed.
+   * @var string The event type currently being processed
    */
   protected $event_type = '';
 
   /**
-   * @var string|null Square subscription ID extracted from the current event.
+   * @var string|null Square subscription ID extracted from the current event
    */
   protected $subscription_id = NULL;
 
   /**
-   * @var string|null Square invoice ID extracted from the current event.
+   * @var string|null Square invoice ID extracted from the current event
    */
   protected $invoice_id = NULL;
 
   /**
-   * @var string|null Square customer ID extracted from the current event.
+   * @var string|null Square customer ID extracted from the current event
    */
   protected $customer_id = NULL;
 
   /**
-   * @var string|null Square payment ID extracted from the current event.
+   * @var string|null Square payment ID extracted from the current event
    */
   protected $payment_id = NULL;
 
   /**
-   * The data provided by the IPN
+   * The data provided by the IPN.
    *
    * @var array|Object|string
    */
@@ -95,7 +97,9 @@ class CRM_Core_Payment_SquareIPN {
    * and audit trail. Webhook delivery must be quick: processing is deferred to
    * CiviCRM's queue worker.
    *
-   * @param array $payload Decoded JSON webhook payload.
+   * @param array $payload
+   *   Decoded JSON webhook payload.
+   *
    * @return bool TRUE on success.
    */
   public function onReceiveWebhook(array $payload): bool {
@@ -153,6 +157,7 @@ class CRM_Core_Payment_SquareIPN {
    * CiviCRM "Process Pending Webhooks" scheduled job.
    *
    * @param array $webhookEvent
+   *
    * @return bool TRUE on success.
    */
   public function processQueuedWebhookEvent(array $webhookEvent): bool {
@@ -212,8 +217,10 @@ class CRM_Core_Payment_SquareIPN {
   /**
    * Extract key identifiers from the payload for use during processing.
    *
-   * @param array $payload Decoded JSON webhook payload.
-   * @param string $eventType Square event type string.
+   * @param array $payload
+   *   Decoded JSON webhook payload.
+   * @param string $eventType
+   *   Square event type string.
    */
   public function setInputParameters(array $payload, string $eventType): void {
     $obj = $payload['data']['object'] ?? [];
@@ -239,9 +246,13 @@ class CRM_Core_Payment_SquareIPN {
   /**
    * Route the webhook event to the appropriate handler.
    *
-   * @param array $payload Decoded JSON webhook payload.
-   * @param string $eventType Square event type string.
+   * @param array $payload
+   *   Decoded JSON webhook payload.
+   * @param string $eventType
+   *   Square event type string.
+   *
    * @return bool TRUE on success.
+   *
    * @throws \Exception on processing failure.
    */
   public function processWebhookEvent(array $payload, string $eventType): bool {
@@ -322,7 +333,8 @@ class CRM_Core_Payment_SquareIPN {
    *   data.object.invoice.{id, subscription_id, status,
    *   payment_requests[0].computed_amount_money.{amount(cents), currency}}
    *
-   * @param array $invoice Invoice object from Square webhook payload.
+   * @param array $invoice
+   *   Invoice object from Square webhook payload.
    */
   protected function handleInvoiceCreated(array $invoice): void {
     $invoiceId = $invoice['id'] ?? NULL;
@@ -340,7 +352,7 @@ class CRM_Core_Payment_SquareIPN {
       return;
     }
 
-    $recur = \Civi\Api4\ContributionRecur::get(FALSE)
+    $recur = ContributionRecur::get(FALSE)
       ->addWhere('processor_id', '=', $subscriptionId)
       ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->execute()
@@ -352,7 +364,7 @@ class CRM_Core_Payment_SquareIPN {
     }
 
     // Prevent duplicates.
-    $existing = \Civi\Api4\Contribution::get(FALSE)
+    $existing = Contribution::get(FALSE)
       ->addSelect('id')
       ->addWhere('invoice_id', '=', $invoiceId)
       ->addWhere('is_test', 'IN', [TRUE, FALSE])
@@ -367,13 +379,14 @@ class CRM_Core_Payment_SquareIPN {
     $amount = $money ? (((float) $money['amount']) / 100) : 0.0;
     $currency = $money['currency'] ?? $recur['currency'] ?? 'USD';
     $orderID = $invoice['order_id'] ?? NULL;
-    \Civi\Api4\Contribution::create(FALSE)
+    Contribution::create(FALSE)
       ->addValue('contact_id', $recur['contact_id'])
       ->addValue('contribution_recur_id', $recur['id'])
       ->addValue('financial_type_id', $recur['financial_type_id'])
       ->addValue('total_amount', $amount)
       ->addValue('currency', $currency)
-      ->addValue('contribution_status_id', 2) // Pending
+    // Pending.
+      ->addValue('contribution_status_id', 2)
       ->addValue('invoice_id', $invoiceId)
       ->addValue('invoice_number', $orderID)
       ->addValue('is_test', $recur['is_test'])
@@ -386,7 +399,8 @@ class CRM_Core_Payment_SquareIPN {
   /**
    * Handle invoice.payment_failed — mark existing contribution as Failed or create a new Failed one.
    *
-   * @param array $invoice Invoice object from Square webhook payload.
+   * @param array $invoice
+   *   Invoice object from Square webhook payload.
    */
   protected function handleInvoicePaymentFailed(array $invoice): void {
     $invoiceId = $invoice['id'] ?? NULL;
@@ -398,16 +412,17 @@ class CRM_Core_Payment_SquareIPN {
     }
 
     // If a contribution already exists for this invoice, mark it Failed.
-    $contribution = \Civi\Api4\Contribution::get(FALSE)
+    $contribution = Contribution::get(FALSE)
       ->addSelect('id')
       ->addWhere('invoice_id', '=', $invoiceId)
       ->execute()
       ->first();
 
     if (!empty($contribution)) {
-      \Civi\Api4\Contribution::update(FALSE)
+      Contribution::update(FALSE)
         ->addWhere('id', '=', $contribution['id'])
-        ->addValue('contribution_status_id', 4) // Failed
+      // Failed.
+        ->addValue('contribution_status_id', 4)
         ->execute();
       CRM_Core_Payment_SquareDebugLogger::log("Square IPN: Marked contribution {$contribution['id']} as Failed for invoice {$invoiceId}.");
       return;
@@ -419,7 +434,7 @@ class CRM_Core_Payment_SquareIPN {
       return;
     }
 
-    $recur = \Civi\Api4\ContributionRecur::get(FALSE)
+    $recur = ContributionRecur::get(FALSE)
       ->addWhere('processor_id', '=', $subscriptionId)
       ->addWhere('is_test', 'IN', [TRUE, FALSE])
       ->addSelect('id', 'contact_id', 'financial_type_id', 'currency')
@@ -435,13 +450,14 @@ class CRM_Core_Payment_SquareIPN {
     $amount = $money ? (((float) $money['amount']) / 100) : 0.0;
     $currency = $money['currency'] ?? $recur['currency'] ?? 'USD';
 
-    \Civi\Api4\Contribution::create(FALSE)
+    Contribution::create(FALSE)
       ->addValue('contact_id', $recur['contact_id'])
       ->addValue('contribution_recur_id', $recur['id'])
       ->addValue('financial_type_id', $recur['financial_type_id'])
       ->addValue('total_amount', $amount)
       ->addValue('currency', $currency)
-      ->addValue('contribution_status_id', 4) // Failed
+    // Failed.
+      ->addValue('contribution_status_id', 4)
       ->addValue('invoice_id', $invoiceId)
       ->addValue('source', 'Square Invoice Failed (Webhook)')
       ->execute();

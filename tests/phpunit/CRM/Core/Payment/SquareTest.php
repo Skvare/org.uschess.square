@@ -1,12 +1,17 @@
 <?php
 
+use Square\Types\Money;
+use Square\Types\PaymentRefund;
+use Square\Types\RefundPaymentResponse;
+use Square\Refunds\Requests\RefundPaymentRequest;
 use PHPUnit\Framework\TestCase;
 
 require_once dirname(__DIR__, 5) . '/CRM/Core/Payment/Square.php';
 
 /**
- * Unit coverage for payment-processor behavior that must not depend on a
- * CiviCRM database or live Square credentials.
+ * Unit coverage for payment-processor behavior.
+ *
+ * Must not depend on a CiviCRM database or live Square credentials.
  */
 class CRM_Core_Payment_SquareTest extends TestCase {
 
@@ -45,9 +50,11 @@ class CRM_Core_Payment_SquareTest extends TestCase {
   public function testIdempotencyKeyIsStableAndScoped(): void {
     $liveConfig = $this->processorConfig();
     $processor = new class('live', $liveConfig) extends CRM_Core_Payment_Square {
+
       public function key(string $operation, string $reference): string {
         return $this->idempotencyKey($operation, $reference);
       }
+
     };
 
     $same = $processor->key('payment', 'invoice-123');
@@ -56,9 +63,11 @@ class CRM_Core_Payment_SquareTest extends TestCase {
 
     $sandboxConfig = $this->processorConfig(['is_test' => TRUE]);
     $sandbox = new class('test', $sandboxConfig) extends CRM_Core_Payment_Square {
+
       public function key(string $operation, string $reference): string {
         return $this->idempotencyKey($operation, $reference);
       }
+
     };
     $this->assertNotSame($same, $sandbox->key('payment', 'invoice-123'));
   }
@@ -66,16 +75,18 @@ class CRM_Core_Payment_SquareTest extends TestCase {
   public function testRefundReturnsCiviRefundStatus(): void {
     $config = $this->processorConfig();
     $processor = new class('live', $config) extends CRM_Core_Payment_Square {
-      protected function createRefund(\Square\Refunds\Requests\RefundPaymentRequest $request) {
-        return new \Square\Types\RefundPaymentResponse([
-          'refund' => new \Square\Types\PaymentRefund([
+
+      protected function createRefund(RefundPaymentRequest $request) {
+        return new RefundPaymentResponse([
+          'refund' => new PaymentRefund([
             'id' => 'refund-1',
             'locationId' => 'location-1',
             'status' => 'COMPLETED',
-            'amountMoney' => new \Square\Types\Money(['amount' => 1234, 'currency' => 'USD']),
+            'amountMoney' => new Money(['amount' => 1234, 'currency' => 'USD']),
           ]),
         ]);
       }
+
     };
     $params = ['trxn_id' => 'payment-1', 'amount' => '12.34', 'currency' => 'USD'];
 

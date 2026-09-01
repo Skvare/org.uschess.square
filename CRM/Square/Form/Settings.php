@@ -3,7 +3,7 @@
 use CRM_Square_ExtensionUtil as E;
 
 /**
- * Class CRM_Square_Form_Settings
+ * Class CRM_Square_Form_Settings.
  *
  * Administer > System Settings > Square Settings.
  *
@@ -15,6 +15,9 @@ class CRM_Square_Form_Settings extends CRM_Core_Form {
 
   const SETTING_NAME = 'square_ipn_debug_logging';
 
+  /**
+   * Build the settings form.
+   */
   public function buildQuickForm() {
     CRM_Utils_System::setTitle(E::ts('Square Settings'));
     $this->addYesNo(self::SETTING_NAME, E::ts('Enable Square IPN Debug Logging'));
@@ -28,12 +31,18 @@ class CRM_Square_Form_Settings extends CRM_Core_Form {
     parent::buildQuickForm();
   }
 
+  /**
+   * Set the form's default values from the current setting value.
+   */
   public function setDefaultValues() {
     $defaults = parent::setDefaultValues();
     $defaults[self::SETTING_NAME] = (bool) Civi::settings()->get(self::SETTING_NAME);
     return $defaults;
   }
 
+  /**
+   * Save the submitted setting value.
+   */
   public function postProcess() {
     $values = $this->exportValues();
     Civi::settings()->set(self::SETTING_NAME, !empty($values[self::SETTING_NAME]));

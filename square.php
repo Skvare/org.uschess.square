@@ -1,11 +1,16 @@
 <?php
-declare(strict_types = 1);
+
+/**
+ * @file
+ * Extension bootstrap and CiviCRM hook implementations for org.uschess.square.
+ */
+
+declare(strict_types=1);
 
 // phpcs:disable PSR1.Files.SideEffects
 require_once 'square.civix.php';
 // phpcs:enable
 
-use CRM_Square_ExtensionUtil as E;
 use Civi\Api4\CustomGroup;
 use Civi\Api4\CustomField;
 
@@ -59,12 +64,13 @@ function square_civicrm_enable(): void {
 
 /**
  * Implements hook_civicrm_managed().
- * Ensure custom fields (Square Customer ID) and payment processor type are created.
+ *
+ * Wires up the managed entities declared under managed/ (currently just
+ * the Square payment processor type, see
+ * managed/PaymentProcessorType.mgd.php).
  */
 function square_civicrm_managed(&$entities): void {
   _square_civix_civicrm_managed($entities);
-
-  // Placeholder: Additional custom-field declarations if not handled by mgd.
 }
 
 /**
@@ -74,7 +80,7 @@ function square_civicrm_managed(&$entities): void {
  */
 function square_civicrm_navigationMenu(&$menu): void {
   _square_civix_insert_navigation_menu($menu, 'Administer/System Settings', [
-    'label' => E::ts('Square Settings'),
+    'label' => \CRM_Square_ExtensionUtil::ts('Square Settings'),
     'name' => 'square_settings',
     'url' => 'civicrm/admin/setting/square?reset=1',
     'permission' => 'administer CiviCRM',

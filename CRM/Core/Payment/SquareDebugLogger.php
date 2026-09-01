@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Class CRM_Core_Payment_SquareDebugLogger
+ * Class CRM_Core_Payment_SquareDebugLogger.
  *
  * Centralised debug logger for the Square payment processor extension.
  *

@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<ruleset name="org.uschess.square">
+  <description>Coding standard for the org.uschess.square CiviCRM extension.
+  Uses the Drupal coding standard (drupal/coder) since this extension follows
+  civix/CiviCRM's 2-space-indented, Drupal-derived style throughout -- PSR-12
+  would flag that entire style as non-conformant since it mandates 4-space
+  indentation.</description>
+
+  <file>CRM</file>
+  <file>square.php</file>
+  <file>settings</file>
+  <file>tests</file>
+
+  <exclude-pattern>*/vendor/*</exclude-pattern>
+  <exclude-pattern>*.civix.php</exclude-pattern>
+  <exclude-pattern>*/templates_c/*</exclude-pattern>
+
+  <arg name="basepath" value="."/>
+  <arg name="colors"/>
+  <arg value="p"/>
+  <arg name="extensions" value="php"/>
+
+  <rule ref="Drupal">
+    <!--
+      CiviCRM's classloader requires PSR-0 style underscored class names
+      (CRM_Core_Payment_Square, CRM_Square_Upgrader, etc.) throughout this
+      codebase; that is a hard CiviCRM convention, not a style choice, so
+      the Drupal standard's "no underscores" naming rule (written for pure
+      Drupal module code) does not apply here. CiviCRM hook functions
+      (square_civicrm_install and friends) are likewise required to be
+      snake_case by CiviCRM's hook-invocation convention.
+    -->
+    <exclude name="Drupal.NamingConventions.ValidClassName.NoUnderscores"/>
+    <exclude name="Drupal.NamingConventions.ValidFunctionName"/>
+    <exclude name="Drupal.Classes.ClassFileName.NoMatch"/>
+
+    <!--
+      Require @param/@return tags with correct types (kept), but don't
+      demand hand-written prose restating an obvious parameter/return
+      purpose on every single method. Most of this codebase's existing
+      docblocks (including CRM_Core_Payment_Square itself, unchanged by
+      this ruleset's introduction) don't carry that extra prose, and
+      requiring it retroactively everywhere is a large low-value rewrite
+      rather than a real correctness or clarity concern.
+    -->
+    <exclude name="Drupal.Commenting.FunctionComment.MissingParamComment"/>
+    <exclude name="Drupal.Commenting.FunctionComment.ParamCommentFull"/>
+    <exclude name="Drupal.Commenting.FunctionComment.MissingReturnComment"/>
+    <exclude name="Drupal.Commenting.FunctionComment.ReturnCommentFull"/>
+
+    <!--
+      $_paymentProcessor and $_component intentionally mirror CiviCRM
+      core's own CRM_Core_Payment property names exactly (including the
+      underscore prefix) for consistency with the base class they extend;
+      that is a hard CiviCRM convention already used throughout core, not
+      a style choice.
+    -->
+    <exclude name="PSR2.Classes.PropertyDeclaration.Underscore"/>
+    <exclude name="Drupal.NamingConventions.ValidVariableName.LowerCamelName"/>
+  </rule>
+
+  <!--
+    80 characters is unrealistic for this codebase's fluent CiviCRM API4
+    query style (Contact::get(FALSE)->addWhere(...)->addSelect(...)) and
+    long user-facing message strings; 120 catches genuinely unwieldy lines
+    without flagging the existing, already-reviewed style everywhere.
+  -->
+  <rule ref="Drupal.Files.LineLength">
+    <properties>
+      <property name="lineLimit" value="120"/>
+      <property name="absoluteLineLimit" value="0"/>
+    </properties>
+  </rule>
+
+  <!-- Flag calls to deprecated PHP functions. -->
+  <rule ref="Generic.PHP.DeprecatedFunctions"/>
+
+  <!--
+    Test methods are self-documenting via their descriptive names
+    (testRefundRejectsNegativeAmount, etc), matching this codebase's
+    existing test-file convention, so don't require a docblock on every
+    one just to restate the method name in prose.
+  -->
+  <rule ref="Drupal.Commenting.FunctionComment.Missing">
+    <exclude-pattern>tests/*</exclude-pattern>
+  </rule>
+  <rule ref="Drupal.Commenting.DocComment.MissingShort">
+    <exclude-pattern>tests/*</exclude-pattern>
+  </rule>
+</ruleset>
