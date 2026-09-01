@@ -39,6 +39,9 @@ function square_civicrm_uninstall(): void {
       ->execute()
       ->first();
     if (!empty($group['id'])) {
+      CustomField::delete(FALSE)
+        ->addWhere('custom_group_id', '=', $group['id'])
+        ->execute();
       CustomGroup::delete(FALSE)
         ->addWhere('id', '=', $group['id'])
         ->execute();
