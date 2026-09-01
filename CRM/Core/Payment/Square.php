@@ -1169,9 +1169,12 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       $amountCents = (int) round(((float) $amount) * 100);
       $currency = $params['currency'] ?? $params['currencyID'] ?? 'USD';
       try {
-        // Make an initial one-time payment for the first billing cycle
+        // Make an initial one-time payment for the first billing cycle.
+        // Use a distinct operation name (rather than prefixing $idempotencyKey,
+        // which is already truncated to Square's 45-char max) so this stays <= 45 chars.
+        $initialPaymentIdempotencyKey = $this->idempotencyKey('subscription-init', (string) $recurId);
         $initialPaymentBody = [
-          'idempotency_key' => 'init_' . $idempotencyKey,
+          'idempotency_key' => $initialPaymentIdempotencyKey,
           'source_id' => $cardId,
           'amount_money' => [
             'amount' => $amountCents,
