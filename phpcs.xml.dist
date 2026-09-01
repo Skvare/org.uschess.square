@@ -33,6 +33,8 @@
     <exclude name="Drupal.NamingConventions.ValidClassName.NoUnderscores"/>
     <exclude name="Drupal.NamingConventions.ValidFunctionName"/>
     <exclude name="Drupal.Classes.ClassFileName.NoMatch"/>
+    <!-- CiviCRM extensions conventionally alias ExtensionUtil classes as E. -->
+    <exclude name="Drupal.Classes.UseGlobalClass.RedundantUseStatement"/>
 
     <!--
       Require @param/@return tags with correct types (kept), but don't

@@ -24,37 +24,51 @@ use Civi\Api4\PaymentprocessorWebhook;
 class CRM_Core_Payment_SquareIPN {
 
   /**
+   * Payment processor handling this webhook.
+   *
    * @var CRM_Core_Payment_Square
    */
   protected $_paymentProcessor;
 
   /**
-   * @var string|null Event ID of the webhook being processed
+   * Webhook event ID being processed.
+   *
+   * @var string|null
    */
   protected $event_id = NULL;
 
   /**
-   * @var string The event type currently being processed
+   * Webhook event type being processed.
+   *
+   * @var string
    */
   protected $event_type = '';
 
   /**
-   * @var string|null Square subscription ID extracted from the current event
+   * Square subscription ID from the current event.
+   *
+   * @var string|null
    */
   protected $subscription_id = NULL;
 
   /**
-   * @var string|null Square invoice ID extracted from the current event
+   * Square invoice ID from the current event.
+   *
+   * @var string|null
    */
   protected $invoice_id = NULL;
 
   /**
-   * @var string|null Square customer ID extracted from the current event
+   * Square customer ID from the current event.
+   *
+   * @var string|null
    */
   protected $customer_id = NULL;
 
   /**
-   * @var string|null Square payment ID extracted from the current event
+   * Square payment ID from the current event.
+   *
+   * @var string|null
    */
   protected $payment_id = NULL;
 
@@ -66,6 +80,8 @@ class CRM_Core_Payment_SquareIPN {
   protected $data;
 
   /**
+   * Create an IPN processor.
+   *
    * @param CRM_Core_Payment_Square $processor
    */
   public function __construct($processor) {
@@ -200,9 +216,9 @@ class CRM_Core_Payment_SquareIPN {
   }
 
   /**
-   * Build a unique identifier for this webhook that lets the queue detect
-   * related events (e.g. invoice.created + invoice.payment_made for the
-   * same invoice share an identifier so they are serialised, not raced).
+   * Build a queue identifier for related webhook events.
+   *
+   * Related invoice events share an identifier and are processed serially.
    *
    * @return string
    */
@@ -253,7 +269,8 @@ class CRM_Core_Payment_SquareIPN {
    *
    * @return bool TRUE on success.
    *
-   * @throws \Exception on processing failure.
+   * @throws \Exception
+   *   On processing failure.
    */
   public function processWebhookEvent(array $payload, string $eventType): bool {
     $obj = $payload['data']['object'] ?? [];
@@ -466,6 +483,8 @@ class CRM_Core_Payment_SquareIPN {
   }
 
   /**
+   * Set the raw IPN data.
+   *
    * @param Object|array|string $data
    */
   public function setData(object|array|string $data) {
@@ -473,6 +492,8 @@ class CRM_Core_Payment_SquareIPN {
   }
 
   /**
+   * Get the raw IPN data.
+   *
    * @return object|array|string
    */
   public function getData(): object|array|string {

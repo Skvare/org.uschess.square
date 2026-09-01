@@ -4,6 +4,7 @@
  * @file
  * Settings metadata for the Square payment processor extension.
  */
+
 return [
   'square_ipn_debug_logging' => [
     'name' => 'square_ipn_debug_logging',

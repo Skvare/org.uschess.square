@@ -1,4 +1,5 @@
 <?php
+
 use CRM_Square_ExtensionUtil as E;
 use Civi\Api4\Contribution;
 use Civi\Api4\Contact;
@@ -53,10 +54,15 @@ require_once E::path() . '/vendor/autoload.php';
 class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
   /**
-   * @var array Payment-processor instance configuration */
+   * Payment-processor instance configuration.
+   *
+   * @var array
+   */
   protected $_paymentProcessor = [];
 
   /**
+   * Active CiviCRM component.
+   *
    * @var string
    *   Component name (e.g. 'contribute' or 'event'), set by doPayment().
    *   Declared explicitly to avoid PHP 8.2's deprecated dynamic-property
@@ -115,7 +121,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    * Constructor.
    *
    * @param string $mode
-   *   'test' or 'live'.
+   *   Test or live.
    * @param array $paymentProcessor
    *   Row from civicrm_payment_processor.
    */
@@ -134,8 +140,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
-   * Inject Square Web Payments SDK, square.js, and card container HTML into the
-   * billing block.
+   * Inject Square assets and card-container HTML into the billing block.
    *
    * This method is called by CiviCRM for ALL form types that render the billing
    * block, including:
@@ -263,8 +268,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
-   * Build an idempotency key that is stable for retries of the same CiviCRM
-   * operation, but distinct between processors and environments.
+   * Build a retry-stable idempotency key unique to each processor and environment.
    */
   protected function idempotencyKey(string $operation, string $reference): string {
     $processorId = (string) ($this->_paymentProcessor['id'] ?? '0');
@@ -1058,7 +1062,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
-   * Main payment call for one-off payments.
+   * Process a recurring payment.
    *
    * - Expects a Web Payments SDK token in:
    *     - $params['square_payment_token'] or
@@ -1069,8 +1073,6 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    *
    * @param array $params
    *   Contribution / participant params.
-   * @param string $component
-   *   Component name (e.g. 'contribute' or 'event').
    *
    * @return array
    *   Updated params.
@@ -1322,8 +1324,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
-   * Thin seam around the Square Refunds API so tests can stub a refund
-   * response without a network call.
+   * Call the Square Refunds API through a testable seam.
    *
    * @param \Square\Refunds\Requests\RefundPaymentRequest $request
    *
@@ -1336,9 +1337,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
-   * Invoke a call against the official Square PHP SDK client, translating SDK
-   * exceptions into CRM_Core_Exception so callers only need to catch one
-   * exception type.
+   * Invoke the Square SDK client and translate its exceptions to CRM_Core_Exception.
    *
    * @param callable(\Square\SquareClient): mixed $call
    *
@@ -1360,9 +1359,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
-   * Build a CRM_Core_Exception from a Square SDK API exception, preserving
-   * the "HTTP <code>. <CODE>: <detail>" message shape that callers and log
-   * messages throughout this class expect.
+   * Convert a Square SDK API exception to the message shape callers expect.
    *
    * @param \Square\Exceptions\SquareApiException $e
    *
@@ -1386,6 +1383,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    * Look up an existing Square customer by email.
    *
    * @param string $email
+   *   Customer email address.
    *
    * @return string|null
    */
@@ -1411,9 +1409,10 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
-   * Look up an existing Square customer by email.
+   * Look up an existing Square customer by ID.
    *
-   * @param string $email
+   * @param string $customerID
+   *   Square customer ID.
    *
    * @return string|null
    */
@@ -1434,9 +1433,15 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
-   * @param $customerID
-   * @param $params
+   * Update a Square customer's details from CiviCRM payment parameters.
+   *
+   * @param string $customerID
+   *   Square customer ID.
+   * @param array $params
+   *   CiviCRM payment parameters.
+   *
    * @return void
+   *
    * @throws CRM_Core_Exception
    */
   protected function updateSquareCustomerDetails($customerID, $params) {
@@ -1771,8 +1776,8 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   /**
    * Translate Square card errors to human-friendly messages.
    *
-   * @param array $errors
    * @param \Square\Types\Error[] $errors
+   *   Square card errors.
    *
    * @return string
    */
@@ -1821,7 +1826,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
-   *
+   * Get the plan variation ID for recurring-payment parameters.
    */
   protected function getPlanVariationIdForParams(array $params): string {
     $entity = $params['component'] ?? 'contribute';
@@ -1834,10 +1839,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       throw new CRM_Core_Exception('Amount and cadence are required for Square subscription.');
     }
 
-    /**
-     * PLAN = what this subscription is about
-     * Variation = amount + cadence
-     */
+    // A plan identifies a subscription purpose; a variation identifies its amount and cadence.
     $planName = sprintf(
       'CiviCRM %s',
       ucfirst($entity)
@@ -2000,12 +2002,9 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
-   * Get the Square Customer ID stored for this contact, scoped to this
-   * payment processor (live and sandbox Square accounts have distinct
-   * customer records, so the mapping is per (contact, processor)).
+   * Get the Square customer ID stored for a contact and processor.
    *
-   * Stored in the extension-owned `square_customer_map` table — see
-   * CRM_Square_Upgrader.
+   * Live and sandbox accounts use distinct customer records.
    *
    * @param int $contactId
    *
@@ -2027,8 +2026,9 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   }
 
   /**
-   * Save the Square Customer ID for this contact, scoped to this payment
-   * processor. See getSquareCustomerId().
+   * Save the Square customer ID for a contact and processor.
+   *
+   * See getSquareCustomerId().
    *
    * @param int $contactId
    * @param string $customerId
@@ -2184,8 +2184,8 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    * @param string $planId
    * @param float $amount
    * @param string $currency
-   * @param string $cadence
-   *   MONTHLY | ANNUAL | WEEKLY.
+   * @param string $intervalUnit
+   *   Day, week, month, or year.
    * @param int $intervalStep
    * @param int|null $installments
    *
@@ -2262,7 +2262,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
    * Resolve Square cadence from interval unit + frequency.
    *
    * @param string $unit
-   *   day|week|month|year.
+   *   Day, week, month, or year.
    * @param int $step
    *
    * @return string
@@ -2431,7 +2431,6 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
         }
       }
       catch (\Exception $e) {
-        // CRM_Core_Payment_SquareDebugLogger::log('Square findContactIdForPayment: Error looking up customer: ' . $e->getMessage());
       }
     }
 
