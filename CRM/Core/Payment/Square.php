@@ -657,28 +657,28 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
   protected function mapSquareSubscriptionStatusToCivi($squareStatus) {
     $squareStatus = strtoupper(trim($squareStatus));
 
-    // CiviCRM recurring statuses:
-    // 1 = Active, 2 = Pending, 3 = Cancelled, 4 = Failed
+    // CiviCRM contribution_status_id values used by this extension for
+    // contribution_recur: 1 = Completed, 2 = Pending, 3 = Cancelled,
+    // 4 = Failed, 5 = In Progress.
     switch ($squareStatus) {
       case 'ACTIVE':
-      case 'PENDING':
+        return 5; // In Progress
+
       case 'CANCELED':
-      case 'SUSPENDED':
       case 'DEACTIVATED':
-        // Map Square semantics:
-        if ($squareStatus === 'ACTIVE') {
-          return 1; // Active
-        }
-        if ($squareStatus === 'PENDING') {
-          return 2; // Pending
-        }
-        if ($squareStatus === 'CANCELED' || $squareStatus === 'DEACTIVATED') {
-          return 3; // Cancelled
-        }
-        if ($squareStatus === 'SUSPENDED') {
-          return 4; // Failed / On Hold
-        }
-        break;
+        return 3; // Cancelled
+
+      case 'SUSPENDED':
+        return 4; // Failed / On Hold
+
+      case 'PENDING':
+        // Square subscriptions report PENDING until their start_date is
+        // reached (we deliberately set start_date to tomorrow — see
+        // doRecurPayment()), even when we've already charged and recorded
+        // a successful initial payment and marked the recur In Progress.
+        // Don't let this calendar-based status downgrade a recurring
+        // record that already has a completed payment back to Pending.
+        return 2;
     }
 
     // If unknown, don't change local status.
