@@ -21,8 +21,6 @@ function square_civicrm_config(\CRM_Core_Config $config): void {
  */
 function square_civicrm_install(): void {
   _square_civix_civicrm_install();
-  // Create custom group and fields for Square integration.
-  square_create_custom_group_and_fields();
 }
 
 /**
@@ -49,76 +47,6 @@ function square_civicrm_uninstall(): void {
   }
   catch (CRM_Core_Exception $e) {
     Civi::log()->error('Square extension uninstall: failed to remove square_data custom group: ' . $e->getMessage());
-  }
-}
-
-/**
- * Create custom group and fields for Square integration.
- *
- * @throws \CRM_Core_Exception
- */
-function square_create_custom_group_and_fields(): void {
-  try {
-    // Check if the custom group already exists.
-    $group = CustomGroup::get(FALSE)
-      ->addWhere('name', '=', 'square_data')
-      ->addSelect('id')
-      ->execute()
-      ->first();
-
-    if (!empty($group['id'])) {
-      $groupId = $group['id'];
-    }
-    else {
-      // Create the custom group for contacts.
-      $result = CustomGroup::create(FALSE)
-        ->addValue('title', 'Square Data')
-        ->addValue('name', 'square_data')
-        ->addValue('extends', 'Contact')
-        ->addValue('style', 'Inline')
-        ->addValue('is_active', TRUE)
-        ->execute()
-        ->first();
-      $groupId = $result['id'];
-    }
-
-    square_create_custom_field_if_missing($groupId, 'square_customer_id', 'Square Customer ID');
-    square_create_custom_field_if_missing($groupId, 'square_card_id', 'Square Card ID');
-  }
-  catch (CRM_Core_Exception $e) {
-    Civi::log()->error('Square extension install: failed to create square_data custom group/fields: ' . $e->getMessage());
-    throw $e;
-  }
-}
-
-/**
- * Create one Square custom field on the given group, if it doesn't already exist.
- *
- * @param int $groupId
- * @param string $name
- * @param string $label
- *
- * @throws \CRM_Core_Exception
- */
-function square_create_custom_field_if_missing(int $groupId, string $name, string $label): void {
-  $field = CustomField::get(FALSE)
-    ->addWhere('custom_group_id', '=', $groupId)
-    ->addWhere('name', '=', $name)
-    ->addSelect('id')
-    ->execute()
-    ->first();
-
-  if (empty($field['id'])) {
-    CustomField::create(FALSE)
-      ->addValue('custom_group_id', $groupId)
-      ->addValue('label', $label)
-      ->addValue('name', $name)
-      ->addValue('data_type', 'String')
-      ->addValue('html_type', 'Text')
-      ->addValue('is_active', TRUE)
-      ->addValue('is_view', TRUE)
-      ->addValue('is_searchable', FALSE)
-      ->execute();
   }
 }
 

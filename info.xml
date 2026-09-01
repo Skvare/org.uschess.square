@@ -34,6 +34,7 @@
     <format>25.10.2</format>
     <angularModule>crmSquare</angularModule>
   </civix>
+  <upgrader>CRM_Square_Upgrader</upgrader>
   <mixins>
     <mixin>menu-xml@1.0.0</mixin>
     <mixin>mgd-php@1.0.0</mixin>

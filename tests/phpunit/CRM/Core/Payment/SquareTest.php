@@ -66,8 +66,15 @@ class CRM_Core_Payment_SquareTest extends TestCase {
   public function testRefundReturnsCiviRefundStatus(): void {
     $config = $this->processorConfig();
     $processor = new class('live', $config) extends CRM_Core_Payment_Square {
-      protected function squareRequest($method, $endpoint, ?array $body = NULL) {
-        return ['refund' => ['id' => 'refund-1', 'status' => 'COMPLETED']];
+      protected function createRefund(\Square\Refunds\Requests\RefundPaymentRequest $request) {
+        return new \Square\Types\RefundPaymentResponse([
+          'refund' => new \Square\Types\PaymentRefund([
+            'id' => 'refund-1',
+            'locationId' => 'location-1',
+            'status' => 'COMPLETED',
+            'amountMoney' => new \Square\Types\Money(['amount' => 1234, 'currency' => 'USD']),
+          ]),
+        ]);
       }
     };
     $params = ['trxn_id' => 'payment-1', 'amount' => '12.34', 'currency' => 'USD'];
