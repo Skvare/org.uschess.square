@@ -70,7 +70,9 @@ Recurring payments use the Square Catalog API to create subscription plans and p
 Configure the Square webhook endpoint as
 `https://your-site.org/civicrm/payment/ipn/{processor_id}`. It validates the
 `X-Square-Hmacsha256-Signature` header before the event is queued. The queue
-worker processes events asynchronously and retries failures.
+record is processed immediately after it is accepted. Failed records remain in
+the CiviCRM webhook queue for the **Process Pending Webhooks** scheduled job
+to retry.
 
 ### Handled events
 
@@ -188,3 +190,68 @@ templates/
 xml/Menu/square.xml          Route: civicrm/admin/setting/square -> CRM_Square_Form_Settings
 square.php                   Extension bootstrap and hooks (config/install/uninstall/enable/managed/navigationMenu)
 ```
+
+---
+
+## Deployment checklist
+
+Use sandbox credentials first. Before accepting live payments, confirm each of
+the following:
+
+1. Enable the required `mjwshared` and `civi_contribute` extensions, then
+   enable this extension.
+2. Create a Square payment processor in CiviCRM and enter the sandbox
+   Application ID, Access Token, Location ID, and Webhook Signature Key.
+3. In the Square Developer Dashboard, create a webhook subscription for that
+   same sandbox application and set its notification URL to
+   `https://your-site.org/civicrm/payment/ipn/{processor_id}`. Replace
+   `{processor_id}` with the CiviCRM payment processor ID.
+4. Subscribe to the events in [Webhook Events](#webhook-events). Events not
+   listed there are acknowledged but intentionally ignored.
+5. Verify that CiviCRM's **Process Pending Webhooks** scheduled job is enabled.
+   It retries queued records whose first processing attempt failed.
+6. Complete a test one-time contribution and, if recurring payments are in
+   scope, a test recurring contribution. Confirm the contribution, payment
+   token, recurring contribution, and webhook records in CiviCRM.
+7. Repeat the configuration with production credentials and the production
+   Square application only after sandbox verification succeeds.
+
+The notification URL configured in Square must be the same URL CiviCRM uses
+for the payment processor. Square's HMAC signature covers the full URL and raw
+request body; a different scheme, hostname, path, or proxy rewrite causes
+signature validation to fail.
+
+## Operations and troubleshooting
+
+The extension records webhook delivery and processing state in
+`civicrm_paymentprocessor_webhook`. Review records with `status = error` and
+the CiviCRM log when reconciliation does not occur.
+
+| Symptom | Check |
+|---|---|
+| Webhook returns HTTP 401 | Verify the processor's Webhook Signature Key and the exact notification URL in Square. Do not trim or transform the raw request body. |
+| Webhook returns HTTP 400 | Verify Square is posting valid JSON. |
+| No change after a webhook | Confirm the event type is supported, the processor ID in the URL is correct, and the queue record is not in an error state. |
+| Repeated webhook delivery | Look for a failed queue record and resolve its logged processing error; Square retries non-successful deliveries. |
+| Card field does not appear | Confirm the selected processor is Square, on-site payment collection is enabled, and browser JavaScript is loading without Content Security Policy errors. |
+| Sandbox data appears missing in live mode | Sandbox and production use different Square customers, cards, credentials, and processor configuration. |
+
+Enable verbose webhook diagnostics at **Administer → System Settings → Square
+Settings** only while investigating an issue. Disable it after the investigation
+and never place access tokens, signature keys, card tokens, or unredacted API
+responses in tickets or logs.
+
+## Development
+
+Requirements: PHP 8.2 or later and the dependencies committed in `vendor/`.
+Run these checks from the extension root before submitting a change:
+
+```bash
+vendor/bin/phpcs --standard=phpcs.xml.dist CRM square.php settings managed tests
+vendor/bin/phpunit --configuration tests/phpunit/phpunit.xml.dist
+```
+
+The codebase follows CiviCRM's two-space, Drupal-derived PHP style. The local
+`.editorconfig` enforces whitespace basics, while `phpcs.xml.dist` records the
+necessary CiviCRM exceptions for legacy `CRM_*` class names and extension hook
+functions. Do not run automatic formatters across `vendor/`.
