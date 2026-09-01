@@ -1105,14 +1105,13 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       throw new CRM_Core_Exception("Failed to find or create Square customer for CiviCRM recur ID {$recurId}");
     }
 
-    // 4. Convert card nonce → persistent card_id
-    if (empty($params['square_payment_token'])) {
-      $cardId = $this->createCardOnFile($customerId, $token);
-    }
-    else {
-      // If using 'square_payment_token', we assume it's already a card on file ID.
-      //$cardId = $token;
-      $cardId = $this->createCardOnFile($customerId, $token);
+    // 4. Fetch the persistent card_id that ensureSquareCustomer() attached
+    // for this contact. Card nonces are single-use, so we must not redeem
+    // $token a second time here — ensureSquareCustomer() already did that.
+    $contactID = (int) ($params['contactID'] ?? $params['contact_id'] ?? 0);
+    $cardId = $this->getSquareCardId($contactID);
+    if (empty($cardId)) {
+      throw new CRM_Core_Exception("Failed to attach a Square card on file for CiviCRM recur ID {$recurId}.");
     }
     CRM_Core_Payment_SquareDebugLogger::log("Square doRecurPayment: Using card ID {$cardId} for customer ID {$customerId} and CiviCRM recur ID {$recurId}");
 
@@ -1481,6 +1480,17 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     // 1. Check if we already have a stored Square Customer ID.
     if ($customerId = $this->getSquareCustomerId($contactID)) {
       // CRM_Core_Payment_SquareDebugLogger::log('Square customer already exists for contact ' . $contactID . ': ' . $customerId);
+      // If a fresh card token/nonce was submitted (e.g. a returning donor
+      // entering a new card), attach and store it. Card nonces are
+      // single-use, so this must be the only place that redeems it.
+      $cardNonce = $params['square_payment_token']
+        ?? $params['payment_token']
+        ?? $params['token']
+        ?? NULL;
+      if (!empty($cardNonce)) {
+        $cardId = $this->createCardOnFile($customerId, $cardNonce, $params, $contactID);
+        $this->saveSquareCardId($contactID, $cardId);
+      }
       return $customerId;
     }
     // Migration logic: check whether this contact already exists in Square based on reference_id.
@@ -1646,13 +1656,7 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       'source_id' => $cardNonce,
       'idempotency_key' => uniqid('square_card_', TRUE),
       'card' => [
-        'card_type' => $params['card_type'] ?? NULL,
-        'last_4' => $params['last_4'] ?? NULL,
-        'exp_month' => $params['exp_month'] ?? NULL,
-        'exp_year' => $params['exp_year'] ?? NULL,
-        'cardholder_name' => $params['cardholder_name'] ?? NULL,
         'customer_id' => $customerId,
-
       ],
     ];
 
@@ -2315,6 +2319,32 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     Civi::settings()->set('org_square_plan_cache', $cache);
 
     return $planId;
+  }
+
+  /**
+   * Get the stored Square Card ID for a contact, if any.
+   *
+   * @param int $contactId
+   *
+   * @return string|null
+   */
+  protected function getSquareCardId($contactId) {
+    $contactId = (int) $contactId;
+    if ($contactId <= 0) {
+      return NULL;
+    }
+
+    $fieldKey = 'square_data.square_card_id';
+    $row = Contact::get(FALSE)
+      ->addSelect($fieldKey)
+      ->addWhere('id', '=', $contactId)
+      ->execute()
+      ->first();
+    if (empty($row) || empty($row[$fieldKey])) {
+      return NULL;
+    }
+
+    return (string) $row[$fieldKey];
   }
 
   /**
