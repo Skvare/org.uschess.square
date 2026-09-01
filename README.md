@@ -7,6 +7,15 @@ Square payment processor extension for CiviCRM.
 - **CiviCRM compatibility:** 6.16+
 - **License:** AGPL-3.0-or-later
 - **Square API version:** 2025-01-15
+- **Requires:** `mjwshared`, `civi_contribute` (see `info.xml`)
+
+---
+
+## Installation
+
+This extension ships its `vendor/` directory (and `composer.lock`) committed to the
+repository, so no `composer install` step is required after cloning/downloading —
+just enable the extension as usual (**Administer → System Settings → Extensions**).
 
 ---
 

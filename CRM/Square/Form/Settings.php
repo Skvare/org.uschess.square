@@ -3,7 +3,7 @@
 use CRM_Square_ExtensionUtil as E;
 
 /**
- * Class CRM_UschessSquare_Form_Settings
+ * Class CRM_Square_Form_Settings
  *
  * Administer > System Settings > Square Settings.
  *
@@ -11,7 +11,7 @@ use CRM_Square_ExtensionUtil as E;
  * dispatch, record lookups, created/updated record IDs) without needing
  * shell/API access. See CRM_Core_Payment_SquareDebugLogger.
  */
-class CRM_UschessSquare_Form_Settings extends CRM_Core_Form {
+class CRM_Square_Form_Settings extends CRM_Core_Form {
 
   const SETTING_NAME = 'square_ipn_debug_logging';
 
