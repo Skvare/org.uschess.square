@@ -49,14 +49,16 @@ class CRM_Core_Payment_Square_StatusMappingTest extends CRM_Core_Payment_Square_
 
   public static function subscriptionStatusProvider(): array {
     return [
+      // Real Square subscription statuses: PENDING, ACTIVE, CANCELED,
+      // DEACTIVATED, PAUSED, and (API versions 2025-09-24+) COMPLETED.
+      // SUSPENDED does not exist and must never be matched/mapped.
+      'pending maps to Pending' => ['PENDING', 2],
+      'paused maps to Pending' => ['PAUSED', 2],
       'active maps to In Progress, not Completed' => ['ACTIVE', 5],
+      'completed maps to Completed' => ['COMPLETED', 1],
       'canceled maps to Cancelled' => ['CANCELED', 3],
-      'deactivated maps to Cancelled' => ['DEACTIVATED', 3],
-      'suspended maps to Failed/On Hold' => ['SUSPENDED', 4],
-      // Square subscriptions report PENDING until start_date is reached,
-      // even after a successful initial payment already moved the local
-      // recur to In Progress -- must NOT downgrade back to Pending.
-      'pending is intentionally left unmapped' => ['PENDING', NULL],
+      'deactivated maps to Failed' => ['DEACTIVATED', 4],
+      'nonexistent suspended status is unmapped' => ['SUSPENDED', NULL],
       'unknown status is unmapped' => ['SOMETHING_NEW', NULL],
     ];
   }

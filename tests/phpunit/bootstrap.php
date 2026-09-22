@@ -87,9 +87,11 @@ if (!class_exists('CRM_Contribute_PseudoConstant')) {
   /**
    * Minimal stand-in for CiviCRM core's contribution-status lookup.
    *
-   * Used by CRM_Core_Payment_Square::contributionStatusId(). Values match
-   * CiviCRM's own default 'contribution_status' option group so tests
-   * exercise the same IDs the production code assumes elsewhere.
+   * Kept even though production code no longer calls this directly
+   * (CRM_Core_Payment_Square::contributionStatusId() now goes through
+   * CRM_Core_PseudoConstant::getKey(), matching CiviCRM's real, current
+   * convention) — some tests still exercise it directly as a regression
+   * guard against reintroducing the deprecated call.
    */
   class CRM_Contribute_PseudoConstant {
 
@@ -106,6 +108,59 @@ if (!class_exists('CRM_Contribute_PseudoConstant')) {
         6 => 'Overdue',
         7 => 'Refunded',
       ];
+    }
+
+  }
+}
+if (!class_exists('CRM_Core_PseudoConstant')) {
+
+  /**
+   * Minimal stand-in for CiviCRM core's pseudoconstant lookup.
+   *
+   * Used by CRM_Core_Payment_Square::pseudoConstantId() for
+   * contribution_status_id, payment_instrument_id, and financial_type_id.
+   * Values match CiviCRM's own default option groups, seeded on every
+   * fresh install, so tests exercise the same IDs the production code
+   * assumes elsewhere.
+   */
+  class CRM_Core_PseudoConstant {
+
+    /**
+     * @param string $baoName
+     * @param string $fieldName
+     * @param string $value
+     *
+     * @return int|false
+     */
+    public static function getKey($baoName, $fieldName, $value) {
+      $options = [
+        'contribution_status_id' => [
+          1 => 'Completed',
+          2 => 'Pending',
+          3 => 'Cancelled',
+          4 => 'Failed',
+          5 => 'In Progress',
+          6 => 'Overdue',
+          7 => 'Refunded',
+        ],
+        'payment_instrument_id' => [
+          1 => 'Credit Card',
+          2 => 'Debit Card',
+          3 => 'Cash',
+          4 => 'Check',
+          5 => 'EFT',
+          6 => 'Money Order',
+        ],
+        'financial_type_id' => [
+          1 => 'Donation',
+          2 => 'Member Dues',
+          3 => 'Campaign Contribution',
+          4 => 'Event Fee',
+          5 => 'Gift',
+        ],
+      ];
+      $id = array_search($value, $options[$fieldName] ?? [], TRUE);
+      return $id === FALSE ? FALSE : $id;
     }
 
   }
