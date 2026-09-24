@@ -977,10 +977,52 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
       return;
     }
 
-    // No existing contribution — clone one from the recurring template via
-    // CiviCRM's own repeat-transaction flow (preserves line items and
-    // financial allocations), left Pending by default, then complete it
-    // via Payment.create.
+    // No contribution matched by invoice_id — for a brand-new
+    // subscription's first invoice there's nothing to match on yet
+    // (Square only assigns an invoice_id once billing starts), but
+    // CiviCRM already created a Pending contribution for this recur at
+    // signup time, before doRecurPayment() ever ran. Complete THAT one
+    // instead of cloning a fresh one via repeattransaction() below —
+    // otherwise the signup-time contribution is orphaned forever while a
+    // duplicate gets created here. Same failure mode as the one-time
+    // flow fixed via invoice_id/reference_id matching in
+    // syncPaymentFromSquare(). This can only ever match the very first
+    // invoice: every contribution repeattransaction() creates gets
+    // invoice_id set immediately after (below), so it's excluded from
+    // this lookup on any later billing cycle.
+    $initialPending = Contribution::get(FALSE)
+      ->addSelect('id')
+      ->addWhere('contribution_recur_id', '=', $recurId)
+      ->addWhere('contribution_status_id', '=', $this->contributionStatusId('Pending'))
+      ->addWhere('invoice_id', 'IS EMPTY')
+      ->addWhere('is_test', 'IN', [TRUE, FALSE])
+      ->addOrderBy('id', 'ASC')
+      ->setLimit(1)
+      ->execute()
+      ->first();
+
+    if (!empty($initialPending)) {
+      $initialContributionId = (int) $initialPending['id'];
+      Contribution::update(FALSE)
+        ->addWhere('id', '=', $initialContributionId)
+        ->addValue('invoice_id', $invoiceId)
+        ->execute();
+      $this->completeContributionPayment($initialContributionId, $amount, $invoiceId, $paymentInstrumentId, NULL, $receiveDate);
+      try {
+        CRM_Contribute_BAO_ContributionRecur::updateOnNewPayment($recurId, 'Completed');
+      }
+      catch (\Throwable $e) {
+        Civi::log()->error("Square webhook: Failed to update contribution recur {$recurId} after processing invoice {$invoiceId}: " . $e->getMessage());
+      }
+      CRM_Core_Payment_SquareDebugLogger::log("Square webhook: Completed signup-time contribution {$initialContributionId} for invoice {$invoiceId} (subscription {$subscriptionId}).");
+      return;
+    }
+
+    // No existing contribution at all — clone one from the recurring
+    // template via CiviCRM's own repeat-transaction flow (preserves line
+    // items and financial allocations), left Pending by default, then
+    // complete it via Payment.create. This is the normal path for the
+    // second and subsequent billing cycles.
     $repeatResult = civicrm_api3('Contribution', 'repeattransaction', [
       'contribution_recur_id' => $recurId,
       'trxn_id' => $invoiceId,
@@ -1200,11 +1242,61 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     }
 
     $trxnId = $payment->getId();
+    $squareStatus = $payment->getStatus() ?? 'UNKNOWN';
+    $mappedStatusId = $this->mapPaymentStatus($squareStatus);
+    $completedStatusId = $this->contributionStatusId('Completed');
 
-    // 6. Set required CiviCRM transaction fields.
+    // 6. Set transaction fields so CiviCRM's caller and any later
+    // payment.updated webhook can both reference this payment.
     $params['trxn_id'] = $trxnId;
-    $params['payment_status_id'] = $this->contributionStatusId('Completed');
-    $params['contribution_status_id'] = $this->contributionStatusId('Completed');
+
+    if ($mappedStatusId === $completedStatusId) {
+      // Square already confirmed this payment as settled within the same
+      // request (the common case — captured immediately) — complete the
+      // contribution's ledger right now instead of waiting on the
+      // asynchronous webhook, which may be delayed, or may never arrive
+      // if this environment's CiviCRM cron isn't reliably running the
+      // webhook backstop job.
+      //
+      // If CiviCRM's own calling code ALSO completes this contribution
+      // from the status/trxn_id returned below (the standard front-end
+      // payment-processor contract), that second attempt will find the
+      // contribution already Completed and throw
+      // "Contribution already completed" from
+      // CRM_Financial_BAO_Payment::create() — harmless here (swallowed
+      // below), since the ledger is already correct either way. A later
+      // payment.updated webhook for the same trxn_id is likewise a safe
+      // no-op (see reconcileExistingContributionPayment()).
+      $contributionId = $params['contributionID'] ?? $params['contribution_id'] ?? NULL;
+      if ($contributionId) {
+        try {
+          $processingFees = $payment->getProcessingFee() ?? [];
+          $feeAmount = !empty($processingFees[0]) && $processingFees[0]->getAmountMoney()
+            ? ((float) $processingFees[0]->getAmountMoney()->getAmount()) / 100
+            : NULL;
+          $this->completeContributionPayment(
+            (int) $contributionId,
+            (float) $amount,
+            $trxnId,
+            $this->mapPaymentInstrument($payment->getSourceType()),
+            $feeAmount
+          );
+        }
+        catch (\Throwable $e) {
+          CRM_Core_Payment_SquareDebugLogger::log("Square doOneTimePayment(): self-completion for contribution {$contributionId} (trxn {$trxnId}) did not apply, presumably already completed: " . $e->getMessage());
+        }
+      }
+      $params['payment_status_id'] = $completedStatusId;
+      $params['contribution_status_id'] = $completedStatusId;
+    }
+    else {
+      // Authorized but not yet captured/settled (e.g. a delayed-capture
+      // hold) — leave the contribution Pending. The payment.updated
+      // webhook will complete it once Square reports COMPLETED.
+      $pendingStatusId = $this->contributionStatusId('Pending');
+      $params['payment_status_id'] = $pendingStatusId;
+      $params['contribution_status_id'] = $pendingStatusId;
+    }
 
     return $params;
   }
