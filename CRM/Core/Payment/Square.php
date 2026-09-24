@@ -371,22 +371,42 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
     $feeAmount = $feeMoney !== NULL ? ($feeMoney / 100) : NULL;
     $currency = $money['currency'] ?? 'USD';
     $orderID = $payment['order_id'] ?? NULL;
+    $referenceId = $payment['reference_id'] ?? NULL;
 
-    // 1. Try to find existing contribution using order id as invoice number, or by
-    // trxn_id (Square payment ID). The initial payment of a new subscription is
-    // charged directly via doPayment() and only ever gets trxn_id set (no
-    // invoice_number/invoice_id), so it must also be matched on trxn_id — otherwise
-    // every payment.updated webhook for it fails to find it, falls through to the
-    // "create new contribution" branch below, and collides with CiviCRM's own
-    // duplicate-transaction guard on trxn_id.
+    // 1. Try to find an existing contribution to reconcile this payment
+    // against, in priority order:
+    // - invoice_id == reference_id: doOneTimePayment() sends CiviCRM's
+    // own invoiceID (civicrm_contribution.invoice_id) as Square's
+    // referenceId when charging, and Square echoes it straight back
+    // on the payment object. This is what ties a contribution CiviCRM
+    // already created as Pending — BEFORE doOneTimePayment() ran, via
+    // the normal Order/Contribution checkout flow — back to this
+    // specific Square payment. Without this match, a webhook arriving
+    // for a payment whose synchronous completion didn't (for whatever
+    // reason) persist trxn_id back onto that Pending contribution
+    // falls through to "create new contribution" below, leaving a
+    // duplicate Completed contribution and an orphaned Pending one.
+    // - trxn_id == payment_id: set once a contribution has already been
+    // completed (synchronously, or by a previous webhook delivery for
+    // the same payment).
+    // - invoice_number == order_id: only ever set on contributions this
+    // webhook handler itself created (see the "create new" branch
+    // below), to match later deliveries of the same event.
     $existingQuery = Contribution::get(FALSE)
       ->addSelect('id', 'contribution_status_id', 'total_amount', 'currency')
       ->addWhere('is_test', 'IN', [TRUE, FALSE]);
+    $orClauses = [['trxn_id', '=', $paymentId]];
+    if ($referenceId !== NULL && $referenceId !== '') {
+      $orClauses[] = ['invoice_id', '=', $referenceId];
+    }
     if ($orderID !== NULL) {
-      $existingQuery->addClause('OR', ['invoice_number', '=', $orderID], ['trxn_id', '=', $paymentId]);
+      $orClauses[] = ['invoice_number', '=', $orderID];
+    }
+    if (count($orClauses) === 1) {
+      $existingQuery->addWhere(...$orClauses[0]);
     }
     else {
-      $existingQuery->addWhere('trxn_id', '=', $paymentId);
+      $existingQuery->addClause('OR', ...$orClauses);
     }
     $existing = $existingQuery->execute()->first();
 
@@ -397,8 +417,8 @@ class CRM_Core_Payment_Square extends CRM_Core_Payment {
 
     CRM_Core_Payment_SquareDebugLogger::log("Square syncPaymentFromSquare(): no existing contribution found for payment {$paymentId} (order_id={$orderID}), attempting to create a new one.");
 
-    // If no contribution exists, try mapping by reference_id → contact or contribution.
-    $referenceId = $payment['reference_id'] ?? NULL;
+    // If no contribution exists, try mapping by reference_id → contact (for
+    // recurring payments, where reference_id is the contribution_recur ID).
     $contactId = NULL;
 
     if ($referenceId && ctype_digit((string) $referenceId)) {
