@@ -20,13 +20,20 @@ use Civi\Api4\PaymentprocessorWebhook;
  *   1. onReceiveWebhook() validates the event type, deduplicates via
  *      civicrm_paymentprocessor_webhook (a table owned by the mjwshared
  *      extension, not CiviCRM core — this extension requires it, see
- *      info.xml) and returns immediately.
+ *      info.xml), records the event, and processes it IMMEDIATELY in the
+ *      same request — donors/staff see the result right away rather than
+ *      waiting on cron.
  *   2. mjwshared's "Process Payment Processor Webhooks" scheduled job
- *      (Job.process_paymentprocessor_webhooks) polls status='new' rows and
- *      calls CRM_Core_Payment_Square::processWebhookEvent(), which invokes
- *      processQueuedWebhookEvent() here. Transient failures are left
- *      status='new' for the job to retry; permanent failures are marked
- *      'error'.
+ *      (Job.process_paymentprocessor_webhooks) is a BACKSTOP: it polls
+ *      rows still sitting in status='new' and calls
+ *      CRM_Core_Payment_Square::processWebhookEvent(), which invokes
+ *      processQueuedWebhookEvent() here. A row only stays 'new' if the
+ *      immediate attempt hit a transient failure (network blip, Square
+ *      5xx/429 — see CRM_Core_Payment_SquareRetryableException); anything
+ *      else resolves to 'success' or 'error' immediately, so a healthy
+ *      site should rarely depend on this job at all. If it never runs
+ *      (e.g. CiviCRM cron not configured), only genuinely transient
+ *      failures go unretried — normal webhooks are unaffected.
  */
 class CRM_Core_Payment_SquareIPN {
 
@@ -117,14 +124,17 @@ class CRM_Core_Payment_SquareIPN {
    * Main entry point — called from Square::handlePaymentNotification().
    *
    * Records the webhook in civicrm_paymentprocessor_webhook for
-   * deduplication and audit trail, then returns immediately — it does NOT
-   * process the event inline. mjwshared's
-   * "Process Payment Processor Webhooks" scheduled job (Job.
-   * process_paymentprocessor_webhooks) polls rows with status='new' and
-   * calls CRM_Core_Payment_Square::processWebhookEvent(), which is what
-   * actually invokes processQueuedWebhookEvent(). This keeps webhook
-   * delivery fast and lets a struggling downstream (CiviCRM DB, Square
-   * API) be retried by the job instead of by Square's own webhook retries.
+   * deduplication and audit trail, then processes it immediately, in the
+   * same request — donors and staff see a completed payment right away
+   * instead of waiting for the next cron run.
+   *
+   * mjwshared's "Process Payment Processor Webhooks" scheduled job (Job.
+   * process_paymentprocessor_webhooks) is a BACKSTOP, not the primary
+   * path: it polls rows still sitting in status='new' and calls
+   * CRM_Core_Payment_Square::processWebhookEvent() for them. A row only
+   * stays 'new' here if this immediate attempt hit a transient failure
+   * (see processQueuedWebhookEvent()) — normally every row resolves to
+   * 'success' or 'error' before this method returns.
    *
    * @param array $payload
    *   Decoded JSON webhook payload.
@@ -165,10 +175,14 @@ class CRM_Core_Payment_SquareIPN {
       return TRUE;
     }
 
+    $newWebhookEvent = NULL;
     try {
       // Deduplicate across every queue state. A previously failed event
       // remains retryable; accepting a replay must not create a second
-      // queue record.
+      // queue record. It's intentionally NOT reprocessed here — if it's
+      // still 'new'/'error', the scheduled job's backstop will pick it up,
+      // rather than risking two concurrent processing attempts for the
+      // same event from rapid Square redeliveries.
       $existingWebhooks = PaymentprocessorWebhook::get(FALSE)
         ->addWhere('payment_processor_id', '=', $processorId)
         ->addWhere('event_id', '=', (string) $eventId)
@@ -179,27 +193,31 @@ class CRM_Core_Payment_SquareIPN {
         return TRUE;
       }
 
-      PaymentprocessorWebhook::create(FALSE)
+      $newWebhookEvent = PaymentprocessorWebhook::create(FALSE)
         ->addValue('payment_processor_id', $processorId)
         ->addValue('trigger', $eventType)
         ->addValue('identifier', $identifier)
         ->addValue('event_id', (string) ($eventId ?? ''))
         ->addValue('data', $this->getData())
-        ->execute();
+        ->execute()
+        ->first();
     }
     finally {
       $lock->release();
     }
 
-    return TRUE;
+    return $this->processQueuedWebhookEvent($newWebhookEvent);
   }
 
   /**
    * Process a single queued webhook event and update its record.
    *
-   * Called by CRM_Core_Payment_Square::processWebhookEvent(), which
-   * mjwshared's Job.process_paymentprocessor_webhooks invokes for every
-   * queued row with status='new'.
+   * Called two ways:
+   *  - Immediately, from onReceiveWebhook() above, right after the row is
+   *    created (the normal path).
+   *  - Later, via CRM_Core_Payment_Square::processWebhookEvent(), which
+   *    mjwshared's Job.process_paymentprocessor_webhooks invokes as a
+   *    backstop for any row still sitting in status='new'.
    *
    * @param array $webhookEvent
    *
